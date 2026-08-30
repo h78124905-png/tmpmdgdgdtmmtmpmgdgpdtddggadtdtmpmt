@@ -16,13 +16,14 @@ set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
 set(GGML_LLAMAFILE OFF CACHE BOOL "" FORCE)
 set(GGML_NATIVE OFF CACHE BOOL "" FORCE)
 
-# Pin the current upstream llama.cpp revision.  DSpark lives in the common
-# speculative runtime, so keep the native host in sync with upstream fixes.
+# Pin the upstream revision used by the Android host.  Use a full clone so
+# CMake/Git can reliably check out an exact commit instead of depending on
+# GitHub's shallow-clone handling of a raw SHA.
 FetchContent_Declare(
     llama_cpp
     GIT_REPOSITORY https://github.com/ggml-org/llama.cpp.git
     GIT_TAG f1793c1c4e586022efa0b1d3aa6e30ccd67f4e2d
-    GIT_SHALLOW TRUE
+    GIT_SHALLOW FALSE
 )
 FetchContent_MakeAvailable(llama_cpp)
 

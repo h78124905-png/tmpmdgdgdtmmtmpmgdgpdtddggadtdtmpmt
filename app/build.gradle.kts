@@ -11,6 +11,7 @@ android {
     }
     namespace = "com.example.lfmmobile"
     compileSdk = 36
+    ndkVersion = "27.2.12479018"
 
     defaultConfig {
         applicationId = "com.example.lfmmobile"

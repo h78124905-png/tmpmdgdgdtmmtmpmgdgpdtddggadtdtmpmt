@@ -16,11 +16,12 @@ set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
 set(GGML_LLAMAFILE OFF CACHE BOOL "" FORCE)
 set(GGML_NATIVE OFF CACHE BOOL "" FORCE)
 
-# Pin a current llama.cpp commit containing the upstream DSpark implementation.
+# Pin the current upstream llama.cpp revision.  DSpark lives in the common
+# speculative runtime, so keep the native host in sync with upstream fixes.
 FetchContent_Declare(
     llama_cpp
     GIT_REPOSITORY https://github.com/ggml-org/llama.cpp.git
-    GIT_TAG 0b5be7e4a25862bc2777d0c47eae18788a8c963a
+    GIT_TAG f1793c1c4e586022efa0b1d3aa6e30ccd67f4e2d
     GIT_SHALLOW TRUE
 )
 FetchContent_MakeAvailable(llama_cpp)

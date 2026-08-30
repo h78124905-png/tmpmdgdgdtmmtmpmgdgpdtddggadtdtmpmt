@@ -49,36 +49,28 @@ std::string get_prompt(JNIEnv * env, jstring prompt) {
     env->ReleaseStringUTFChars(prompt, chars);
     return text;
 }
-
-std::string load_error(const char * stage, const std::exception & e) {
-    std::string msg = std::string("DSpark load failed at ") + stage + ": " + e.what();
-    LOGE("%s", msg.c_str());
-    return msg;
-}
-}
-
-extern "C" JNIEXPORT jstring JNICALL
-Java_com_example_lfmmobile_LlamaEngine_nativeLoadError(JNIEnv * env, jobject) {
-    return env->NewStringUTF("No native load error recorded.");
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_example_lfmmobile_LlamaEngine_nativeLoadModelsFromFds(
-        JNIEnv * env, jobject, jint target_fd, jint draft_fd, jint context_size, jint draft_max) {
+        JNIEnv *, jobject, jint target_fd, jint draft_fd, jint context_size, jint draft_max) {
     if (target_fd < 0 || draft_fd < 0) return JNI_FALSE;
     free_engine();
     common_init();
     llama_backend_init();
 
     try {
+        const std::string target_path = fd_path(target_fd);
+        const std::string draft_path  = fd_path(draft_fd);
+
         common_params params;
-        params.model.path = fd_path(target_fd);
+        params.model.path = target_path;
         params.n_ctx = std::max(512, static_cast<int>(context_size));
         params.n_batch = std::min(params.n_ctx, 512);
         params.n_ubatch = std::min(params.n_batch, 512);
         params.n_parallel = 1;
         params.speculative.types = { COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK };
-        params.speculative.draft.mparams.path = fd_path(draft_fd);
+        params.speculative.draft.mparams.path = draft_path;
         params.speculative.draft.n_max = std::clamp(static_cast<int>(draft_max), 1, 16);
         params.speculative.draft.p_min = 0.0f;
 
@@ -90,8 +82,14 @@ Java_com_example_lfmmobile_LlamaEngine_nativeLoadModelsFromFds(
             return JNI_FALSE;
         }
 
+        // common_base_params_to_speculative() moves the draft model parameters
+        // into result.model. common_speculative_init_result then loads result.model.path,
+        // not speculative.draft.mparams.path. Explicitly set the result model path to
+        // the dSpark FD so we do not accidentally load the target model a second time.
         common_params params_dft = common_base_params_to_speculative(params);
-        params_dft.speculative.draft.mparams.path = fd_path(draft_fd);
+        params_dft.model.path = draft_path;
+        params_dft.speculative.draft.mparams.path = draft_path;
+
         auto draft_init = common_speculative_init_from_params(
             params_dft, target_init->model(), target_init->context());
         if (!draft_init || !draft_init->model() || !draft_init->context()) {
@@ -103,6 +101,7 @@ Java_com_example_lfmmobile_LlamaEngine_nativeLoadModelsFromFds(
 
         params.speculative.draft.ctx_tgt = target_init->context();
         params.speculative.draft.ctx_dft = draft_init->context();
+
         auto spec = common_speculative_init(params.speculative, 1);
         if (!spec) {
             LOGE("common_speculative_init returned null");
@@ -141,8 +140,7 @@ Java_com_example_lfmmobile_LlamaEngine_nativeLoadModelsFromFds(
         close(target_fd);
         close(draft_fd);
         free_engine();
-        const std::string msg = load_error("model/speculative initialization", e);
-        (void) msg;
+        LOGE("DSpark load failed: %s", e.what());
         return JNI_FALSE;
     } catch (...) {
         close(target_fd);

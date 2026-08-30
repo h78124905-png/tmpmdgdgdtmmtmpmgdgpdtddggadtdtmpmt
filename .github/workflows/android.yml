@@ -43,8 +43,17 @@ jobs:
         run: |
           APK="app/build/outputs/apk/release/app-release.apk"
           test -f "$APK"
-          apksigner verify --verbose "$APK"
+
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+          test -n "$SDK_ROOT"
+
+          APKSIGNER="$(find "$SDK_ROOT/build-tools" -type f -name apksigner -print | sort -V | tail -n 1)"
+          test -n "$APKSIGNER"
+          test -x "$APKSIGNER" || chmod +x "$APKSIGNER"
+
+          "$APKSIGNER" verify --verbose "$APK"
           echo "Signed APK: $APK"
+          echo "Verified with: $APKSIGNER"
 
       - name: Upload signed APK
         uses: actions/upload-artifact@v4

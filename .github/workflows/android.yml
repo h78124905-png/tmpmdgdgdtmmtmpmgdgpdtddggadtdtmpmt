@@ -29,15 +29,17 @@ jobs:
           yes | sdkmanager --licenses >/dev/null || true
           sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;27.2.12479018" "cmake;3.31.6"
 
-      - name: Configure Android Build Tools path
+      - name: Locate Android Build Tools
+        shell: bash
         run: |
+          set -euo pipefail
           SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
           test -n "$SDK_ROOT"
-          BUILD_TOOLS_DIR="$SDK_ROOT/build-tools/36.0.0"
-          test -x "$BUILD_TOOLS_DIR/apksigner"
-          echo "$BUILD_TOOLS_DIR" >> "$GITHUB_PATH"
-          echo "ANDROID_BUILD_TOOLS=$BUILD_TOOLS_DIR" >> "$GITHUB_ENV"
-          apksigner --version
+          APKSIGNER="$(find "$SDK_ROOT/build-tools" -type f -name apksigner -perm -111 | sort -V | tail -n 1)"
+          test -n "$APKSIGNER"
+          echo "APKSIGNER=$APKSIGNER" >> "$GITHUB_ENV"
+          echo "$(dirname "$APKSIGNER")" >> "$GITHUB_PATH"
+          "$APKSIGNER" --version
 
       - name: Install Gradle 8.13
         run: |
@@ -45,18 +47,18 @@ jobs:
           unzip -q /tmp/gradle.zip -d /tmp
           echo "/tmp/gradle-8.13/bin" >> "$GITHUB_PATH"
 
-      - name: Build signed release APK
+      - name: Build release APK
         run: |
           gradle --no-daemon clean assembleRelease
 
       - name: Verify APK signature
+        shell: bash
         run: |
+          set -euo pipefail
           APK="app/build/outputs/apk/release/app-release.apk"
           test -f "$APK"
-          test -x "$ANDROID_BUILD_TOOLS/apksigner"
-          "$ANDROID_BUILD_TOOLS/apksigner" verify --verbose "$APK"
-          echo "Signed APK: $APK"
-          echo "Verified with: $ANDROID_BUILD_TOOLS/apksigner"
+          "$APKSIGNER" verify --verbose "$APK"
+          echo "Signed APK verified: $APK"
 
       - name: Upload signed APK
         uses: actions/upload-artifact@v4

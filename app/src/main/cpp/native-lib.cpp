@@ -26,6 +26,7 @@ struct Engine {
     const llama_vocab * vocab = nullptr;
     int context_size = 4096;
     int draft_max = 7;
+    std::string last_error;
 };
 Engine g_engine;
 
@@ -38,6 +39,12 @@ void free_engine() {
     g_engine.target_context = nullptr;
     g_engine.draft_context = nullptr;
     g_engine.vocab = nullptr;
+    g_engine.last_error.clear();
+}
+
+void fail(const std::string & msg) {
+    g_engine.last_error = msg;
+    LOGE("%s", msg.c_str());
 }
 
 std::string fd_path(int fd) { return "/proc/self/fd/" + std::to_string(fd); }
@@ -76,16 +83,12 @@ Java_com_example_lfmmobile_LlamaEngine_nativeLoadModelsFromFds(
 
         auto target_init = common_init_from_params(params);
         if (!target_init || !target_init->model() || !target_init->context()) {
-            LOGE("target model/context initialization returned null");
+            fail("stage=target_init");
             close(target_fd);
             close(draft_fd);
             return JNI_FALSE;
         }
 
-        // common_base_params_to_speculative() moves the draft model parameters
-        // into result.model. common_speculative_init_result then loads result.model.path,
-        // not speculative.draft.mparams.path. Explicitly set the result model path to
-        // the dSpark FD so we do not accidentally load the target model a second time.
         common_params params_dft = common_base_params_to_speculative(params);
         params_dft.model.path = draft_path;
         params_dft.speculative.draft.mparams.path = draft_path;
@@ -93,7 +96,7 @@ Java_com_example_lfmmobile_LlamaEngine_nativeLoadModelsFromFds(
         auto draft_init = common_speculative_init_from_params(
             params_dft, target_init->model(), target_init->context());
         if (!draft_init || !draft_init->model() || !draft_init->context()) {
-            LOGE("dSpark draft model/context initialization returned null");
+            fail("stage=draft_init; target loaded but dSpark draft initialization failed");
             close(target_fd);
             close(draft_fd);
             return JNI_FALSE;
@@ -104,7 +107,7 @@ Java_com_example_lfmmobile_LlamaEngine_nativeLoadModelsFromFds(
 
         auto spec = common_speculative_init(params.speculative, 1);
         if (!spec) {
-            LOGE("common_speculative_init returned null");
+            fail("stage=speculative_init; target and dSpark contexts loaded but DSpark runtime initialization failed");
             close(target_fd);
             close(draft_fd);
             return JNI_FALSE;
@@ -116,7 +119,7 @@ Java_com_example_lfmmobile_LlamaEngine_nativeLoadModelsFromFds(
         sampling.top_p = 0.95f;
         auto sampler = common_sampler_init(target_init->model(), sampling);
         if (!sampler) {
-            LOGE("target sampler initialization returned null");
+            fail("stage=sampler_init");
             close(target_fd);
             close(draft_fd);
             return JNI_FALSE;
@@ -135,18 +138,19 @@ Java_com_example_lfmmobile_LlamaEngine_nativeLoadModelsFromFds(
         g_engine.vocab = llama_model_get_vocab(g_engine.target_model);
         g_engine.context_size = params.n_ctx;
         g_engine.draft_max = params.speculative.draft.n_max;
+        g_engine.last_error.clear();
         return JNI_TRUE;
     } catch (const std::exception & e) {
         close(target_fd);
         close(draft_fd);
         free_engine();
-        LOGE("DSpark load failed: %s", e.what());
+        fail(std::string("stage=exception; ") + e.what());
         return JNI_FALSE;
     } catch (...) {
         close(target_fd);
         close(draft_fd);
         free_engine();
-        LOGE("DSpark load failed with an unknown native exception");
+        fail("stage=exception; unknown native exception");
         return JNI_FALSE;
     }
 }
@@ -236,13 +240,16 @@ Java_com_example_lfmmobile_LlamaEngine_nativeGenerate(JNIEnv * env, jobject, jst
         }
 
         draft.clear();
-        llama_memory_seq_rm(llama_get_memory(g_engine.target_context), seq_id, n_past, -1);
-        llama_memory_seq_rm(llama_get_memory(g_engine.draft_context), seq_id, n_past, -1);
         if (llama_vocab_is_eog(g_engine.vocab, id_last)) break;
     }
 
     llama_batch_free(batch_tgt);
     return env->NewStringUTF(output.c_str());
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_example_lfmmobile_LlamaEngine_nativeGetLastError(JNIEnv * env, jobject) {
+    return env->NewStringUTF(g_engine.last_error.c_str());
 }
 
 extern "C" JNIEXPORT void JNICALL

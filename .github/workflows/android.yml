@@ -23,6 +23,8 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
 
       - name: Install Android SDK components
         run: |
@@ -46,6 +48,16 @@ jobs:
           curl -L --fail -o /tmp/gradle.zip https://services.gradle.org/distributions/gradle-8.13-bin.zip
           unzip -q /tmp/gradle.zip -d /tmp
           echo "/tmp/gradle-8.13/bin" >> "$GITHUB_PATH"
+
+      - name: Opt in to Material3 experimental API
+        shell: bash
+        run: |
+          set -euo pipefail
+          FILE="app/src/main/java/com/example/lfmmobile/MainActivity.kt"
+          test -f "$FILE"
+          if ! grep -q 'androidx.compose.material3.ExperimentalMaterial3Api' "$FILE"; then
+            sed -i '1i @file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)' "$FILE"
+          fi
 
       - name: Build release APK
         run: |

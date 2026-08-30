@@ -24,10 +24,20 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install Android build tools
+      - name: Install Android SDK components
         run: |
           yes | sdkmanager --licenses >/dev/null || true
           sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;27.2.12479018" "cmake;3.31.6"
+
+      - name: Configure Android Build Tools path
+        run: |
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+          test -n "$SDK_ROOT"
+          BUILD_TOOLS_DIR="$SDK_ROOT/build-tools/36.0.0"
+          test -x "$BUILD_TOOLS_DIR/apksigner"
+          echo "$BUILD_TOOLS_DIR" >> "$GITHUB_PATH"
+          echo "ANDROID_BUILD_TOOLS=$BUILD_TOOLS_DIR" >> "$GITHUB_ENV"
+          apksigner --version
 
       - name: Install Gradle 8.13
         run: |
@@ -43,17 +53,10 @@ jobs:
         run: |
           APK="app/build/outputs/apk/release/app-release.apk"
           test -f "$APK"
-
-          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
-          test -n "$SDK_ROOT"
-
-          APKSIGNER="$(find "$SDK_ROOT/build-tools" -type f -name apksigner -print | sort -V | tail -n 1)"
-          test -n "$APKSIGNER"
-          test -x "$APKSIGNER" || chmod +x "$APKSIGNER"
-
-          "$APKSIGNER" verify --verbose "$APK"
+          test -x "$ANDROID_BUILD_TOOLS/apksigner"
+          "$ANDROID_BUILD_TOOLS/apksigner" verify --verbose "$APK"
           echo "Signed APK: $APK"
-          echo "Verified with: $APKSIGNER"
+          echo "Verified with: $ANDROID_BUILD_TOOLS/apksigner"
 
       - name: Upload signed APK
         uses: actions/upload-artifact@v4

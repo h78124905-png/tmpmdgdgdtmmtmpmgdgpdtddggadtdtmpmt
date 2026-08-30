@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -32,11 +35,21 @@ jobs:
           unzip -q /tmp/gradle.zip -d /tmp
           echo "/tmp/gradle-8.13/bin" >> "$GITHUB_PATH"
 
-      - name: Build release APK
-        run: gradle --no-daemon assembleRelease
+      - name: Build signed release APK
+        run: |
+          gradle --no-daemon clean assembleRelease
 
-      - name: Upload APK
+      - name: Verify APK signature
+        run: |
+          APK="app/build/outputs/apk/release/app-release.apk"
+          test -f "$APK"
+          apksigner verify --verbose "$APK"
+          echo "Signed APK: $APK"
+
+      - name: Upload signed APK
         uses: actions/upload-artifact@v4
         with:
           name: lfm-mobile-release
-          path: app/build/outputs/apk/release/*.apk
+          path: app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
+          retention-days: 90

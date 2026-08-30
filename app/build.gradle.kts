@@ -27,6 +27,10 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
+            // CI/test release: use Android's debug keystore so the APK is signed
+            // and directly installable without putting a private release key in
+            // the public repository.
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
 

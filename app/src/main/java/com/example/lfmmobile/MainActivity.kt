@@ -3,8 +3,8 @@ package com.example.lfmmobile
 import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
-import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -31,38 +31,37 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         setContent { ChatApp() }
     }
+
+    fun displayName(uri: Uri): String? {
+        contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+            if (c.moveToFirst()) return c.getString(0)
+        }
+        return null
+    }
 }
 
 @Composable
 private fun ChatApp() {
+    val activity = LocalActivity.current
     val engine = remember { LlamaEngine() }
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
-    val prefs = remember { androidx.compose.runtime.mutableStateOf(false) }
     var target by remember { mutableStateOf(ModelSlot()) }
     var dspark by remember { mutableStateOf(ModelSlot()) }
     var activeRole by remember { mutableIntStateOf(TARGET) }
     var messages by remember { mutableStateOf(listOf<Message>()) }
     var prompt by remember { mutableStateOf("") }
     var generating by remember { mutableStateOf(false) }
-    var showSettings by remember { mutableStateOf(false) }
+    var showModels by remember { mutableStateOf(false) }
     var contextSize by remember { mutableIntStateOf(4096) }
     var maxTokens by remember { mutableIntStateOf(512) }
     var pickerRole by remember { mutableIntStateOf(TARGET) }
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         uri ?: return@rememberLauncherForActivityResult
-        val name = queryDisplayName(uri) ?: uri.lastPathSegment?.substringAfterLast('/') ?: "model.gguf"
+        val name = activity.displayName(uri) ?: uri.lastPathSegment?.substringAfterLast('/') ?: "model.gguf"
         val slot = ModelSlot(uri.toString(), name, false)
         if (pickerRole == TARGET) target = slot else dspark = slot
-    }
-
-    LaunchedEffect(Unit) {
-        // Persisted SAF URIs survive app restarts; actual model loading remains explicit.
-        val p = (this@LaunchedEffect as? Any)
-    }
-    LaunchedEffect(target.uri, dspark.uri) {
-        if (target.uri.isNotEmpty() || dspark.uri.isNotEmpty()) prefs.value = !prefs.value
     }
 
     LaunchedEffect(messages.size, generating) {
@@ -74,7 +73,7 @@ private fun ChatApp() {
         if (slot.uri.isEmpty()) return
         scope.launch {
             val ok = withContext(Dispatchers.IO) {
-                contentResolver.openFileDescriptor(Uri.parse(slot.uri), "r")?.use { pfd ->
+                activity.contentResolver.openFileDescriptor(Uri.parse(slot.uri), "r")?.use { pfd ->
                     engine.loadModelFromFd(role, pfd.detachFd(), contextSize)
                 } ?: false
             }
@@ -103,7 +102,7 @@ private fun ChatApp() {
                     title = { Text("Lfm Mobile", fontWeight = FontWeight.SemiBold) },
                     actions = {
                         TextButton({ messages = emptyList() }) { Text("New") }
-                        TextButton({ showSettings = true }) { Text("Models") }
+                        TextButton({ showModels = true }) { Text("Models") }
                     }
                 )
             }) { padding ->
@@ -121,49 +120,47 @@ private fun ChatApp() {
                     ) {
                         if (messages.isEmpty()) item { Welcome(activeRole, target, dspark) }
                         items(messages) { MessageBubble(it) }
-                        if (generating) item { Text("Thinking…", Modifier.padding(start = 38.dp)) }
+                        if (generating) item { Text("Thinking…", Modifier.padding(start = 12.dp)) }
                     }
                     Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.Bottom) {
                         OutlinedTextField(
-                            value = prompt, onValueChange = { prompt = it },
-                            modifier = Modifier.weight(1f),
+                            value = prompt, onValueChange = { prompt = it }, modifier = Modifier.weight(1f),
                             placeholder = { Text(if (activeRole == TARGET) "Message Target model" else "Message dSpark model") },
                             enabled = !generating && if (activeRole == TARGET) target.loaded else dspark.loaded,
                             shape = RoundedCornerShape(24.dp), maxLines = 6
                         )
                         Spacer(Modifier.width(8.dp))
-                        Button({ send() }, enabled = prompt.isNotBlank() && !generating && if (activeRole == TARGET) target.loaded else dspark.loaded) { Text("Send") }
+                        Button(onClick = { send() }, enabled = prompt.isNotBlank() && !generating && if (activeRole == TARGET) target.loaded else dspark.loaded) { Text("Send") }
                     }
                 }
             }
         }
     }
 
-    if (showSettings) {
+    if (showModels) {
         AlertDialog(
-            onDismissRequest = { showSettings = false },
+            onDismissRequest = { showModels = false },
             title = { Text("Models") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    ModelCard("Target model", target, onPick = { pickerRole = TARGET; picker.launch(arrayOf("application/octet-stream", "application/x-gguf", "*/*")) }, onLoad = { load(TARGET) })
-                    ModelCard("dSpark model", dspark, onPick = { pickerRole = DSPARK; picker.launch(arrayOf("application/octet-stream", "application/x-gguf", "*/*")) }, onLoad = { load(DSPARK) })
+                    ModelCard("Target model", target,
+                        onPick = { pickerRole = TARGET; picker.launch(arrayOf("application/octet-stream", "application/x-gguf", "*/*")) },
+                        onLoad = { load(TARGET) })
+                    ModelCard("dSpark model", dspark,
+                        onPick = { pickerRole = DSPARK; picker.launch(arrayOf("application/octet-stream", "application/x-gguf", "*/*")) },
+                        onLoad = { load(DSPARK) })
                     HorizontalDivider()
                     OutlinedTextField(contextSize.toString(), { it.toIntOrNull()?.let { v -> contextSize = v } }, label = { Text("Context size") }, singleLine = true)
                     OutlinedTextField(maxTokens.toString(), { it.toIntOrNull()?.let { v -> maxTokens = v } }, label = { Text("Max tokens") }, singleLine = true)
                     Text("Dark mode only", style = MaterialTheme.typography.bodySmall)
                 }
             },
-            confirmButton = { TextButton({ showSettings = false }) { Text("Done") } }
+            confirmButton = { TextButton({ showModels = false }) { Text("Done") } }
         )
     }
 }
 
-private fun ComponentActivity.queryDisplayName(uri: Uri): String? {
-    contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
-        if (c.moveToFirst()) return c.getString(0)
-    }
-    return null
-}
+private val LocalActivity = staticCompositionLocalOf<ComponentActivity> { error("Activity not provided") }
 
 @Composable
 private fun ModelCard(title: String, slot: ModelSlot, onPick: () -> Unit, onLoad: () -> Unit) {

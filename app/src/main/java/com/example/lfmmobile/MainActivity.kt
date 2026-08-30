@@ -43,7 +43,7 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 private fun ChatApp() {
-    val activity = LocalContext.current as ComponentActivity
+    val activity = LocalContext.current as MainActivity
     val engine = remember { LlamaEngine() }
     val search = remember { SearchService() }
     val scope = rememberCoroutineScope()
@@ -92,8 +92,12 @@ private fun ChatApp() {
                     false to "Could not open one of the selected model files."
                 } else {
                     try {
-                        val ok = engine.loadModelsFromFds(targetPfd.detachFd(), draftPfd.detachFd(), contextSize, draftMax)
+                        val targetFd = targetPfd.detachFd()
+                        val draftFd = draftPfd.detachFd()
+                        val ok = engine.loadModelsFromFds(targetFd, draftFd, contextSize, draftMax)
                         ok to if (ok) "" else "llama.cpp could not load the target/dSpark pair. Check that the dSpark checkpoint matches the target model."
+                    } catch (e: Exception) {
+                        false to (e.message ?: "Could not load the selected models.")
                     } finally {
                         targetPfd.close(); draftPfd.close()
                     }

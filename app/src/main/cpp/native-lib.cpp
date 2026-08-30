@@ -2,6 +2,7 @@
 #include <android/log.h>
 #include <unistd.h>
 #include <algorithm>
+#include <exception>
 #include <string>
 #include <vector>
 
@@ -48,61 +49,108 @@ std::string get_prompt(JNIEnv * env, jstring prompt) {
     env->ReleaseStringUTFChars(prompt, chars);
     return text;
 }
+
+std::string load_error(const char * stage, const std::exception & e) {
+    std::string msg = std::string("DSpark load failed at ") + stage + ": " + e.what();
+    LOGE("%s", msg.c_str());
+    return msg;
+}
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_example_lfmmobile_LlamaEngine_nativeLoadError(JNIEnv * env, jobject) {
+    return env->NewStringUTF("No native load error recorded.");
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_example_lfmmobile_LlamaEngine_nativeLoadModelsFromFds(
-        JNIEnv *, jobject, jint target_fd, jint draft_fd, jint context_size, jint draft_max) {
+        JNIEnv * env, jobject, jint target_fd, jint draft_fd, jint context_size, jint draft_max) {
     if (target_fd < 0 || draft_fd < 0) return JNI_FALSE;
     free_engine();
     common_init();
     llama_backend_init();
 
-    common_params params;
-    params.model.path = fd_path(target_fd);
-    params.n_ctx = std::max(512, static_cast<int>(context_size));
-    params.n_batch = std::min(params.n_ctx, 512);
-    params.n_ubatch = std::min(params.n_batch, 512);
-    params.n_parallel = 1;
-    params.speculative.types = { COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK };
-    params.speculative.draft.mparams.path = fd_path(draft_fd);
-    params.speculative.draft.n_max = std::clamp(static_cast<int>(draft_max), 1, 16);
+    try {
+        common_params params;
+        params.model.path = fd_path(target_fd);
+        params.n_ctx = std::max(512, static_cast<int>(context_size));
+        params.n_batch = std::min(params.n_ctx, 512);
+        params.n_ubatch = std::min(params.n_batch, 512);
+        params.n_parallel = 1;
+        params.speculative.types = { COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK };
+        params.speculative.draft.mparams.path = fd_path(draft_fd);
+        params.speculative.draft.n_max = std::clamp(static_cast<int>(draft_max), 1, 16);
+        params.speculative.draft.p_min = 0.0f;
 
-    auto target_init = common_init_from_params(params);
-    close(target_fd);
-    if (!target_init || !target_init->model() || !target_init->context()) {
+        auto target_init = common_init_from_params(params);
+        if (!target_init || !target_init->model() || !target_init->context()) {
+            LOGE("target model/context initialization returned null");
+            close(target_fd);
+            close(draft_fd);
+            return JNI_FALSE;
+        }
+
+        common_params params_dft = common_base_params_to_speculative(params);
+        params_dft.speculative.draft.mparams.path = fd_path(draft_fd);
+        auto draft_init = common_speculative_init_from_params(
+            params_dft, target_init->model(), target_init->context());
+        if (!draft_init || !draft_init->model() || !draft_init->context()) {
+            LOGE("dSpark draft model/context initialization returned null");
+            close(target_fd);
+            close(draft_fd);
+            return JNI_FALSE;
+        }
+
+        params.speculative.draft.ctx_tgt = target_init->context();
+        params.speculative.draft.ctx_dft = draft_init->context();
+        auto spec = common_speculative_init(params.speculative, 1);
+        if (!spec) {
+            LOGE("common_speculative_init returned null");
+            close(target_fd);
+            close(draft_fd);
+            return JNI_FALSE;
+        }
+
+        common_params_sampling sampling;
+        sampling.temp = 0.7f;
+        sampling.top_k = 40;
+        sampling.top_p = 0.95f;
+        auto sampler = common_sampler_init(target_init->model(), sampling);
+        if (!sampler) {
+            LOGE("target sampler initialization returned null");
+            close(target_fd);
+            close(draft_fd);
+            return JNI_FALSE;
+        }
+
+        close(target_fd);
         close(draft_fd);
+
+        g_engine.target_init = std::move(target_init);
+        g_engine.draft_init = std::move(draft_init);
+        g_engine.spec.reset(spec);
+        g_engine.sampler.reset(sampler);
+        g_engine.target_model = g_engine.target_init->model();
+        g_engine.target_context = g_engine.target_init->context();
+        g_engine.draft_context = g_engine.draft_init->context();
+        g_engine.vocab = llama_model_get_vocab(g_engine.target_model);
+        g_engine.context_size = params.n_ctx;
+        g_engine.draft_max = params.speculative.draft.n_max;
+        return JNI_TRUE;
+    } catch (const std::exception & e) {
+        close(target_fd);
+        close(draft_fd);
+        free_engine();
+        const std::string msg = load_error("model/speculative initialization", e);
+        (void) msg;
+        return JNI_FALSE;
+    } catch (...) {
+        close(target_fd);
+        close(draft_fd);
+        free_engine();
+        LOGE("DSpark load failed with an unknown native exception");
         return JNI_FALSE;
     }
-
-    common_params params_dft = common_base_params_to_speculative(params);
-    auto draft_init = common_speculative_init_from_params(params_dft, target_init->model(), target_init->context());
-    close(draft_fd);
-    if (!draft_init || !draft_init->model() || !draft_init->context()) return JNI_FALSE;
-
-    params.speculative.draft.ctx_tgt = target_init->context();
-    params.speculative.draft.ctx_dft = draft_init->context();
-    auto spec = common_speculative_init(params.speculative, 1);
-    if (!spec) return JNI_FALSE;
-
-    common_params_sampling sampling;
-    sampling.temp = 0.7f;
-    sampling.top_k = 40;
-    sampling.top_p = 0.95f;
-    auto sampler = common_sampler_init(target_init->model(), sampling);
-    if (!sampler) return JNI_FALSE;
-
-    g_engine.target_init = std::move(target_init);
-    g_engine.draft_init = std::move(draft_init);
-    g_engine.spec.reset(spec);
-    g_engine.sampler.reset(sampler);
-    g_engine.target_model = g_engine.target_init->model();
-    g_engine.target_context = g_engine.target_init->context();
-    g_engine.draft_context = g_engine.draft_init->context();
-    g_engine.vocab = llama_model_get_vocab(g_engine.target_model);
-    g_engine.context_size = params.n_ctx;
-    g_engine.draft_max = params.speculative.draft.n_max;
-    return JNI_TRUE;
 }
 
 extern "C" JNIEXPORT jstring JNICALL

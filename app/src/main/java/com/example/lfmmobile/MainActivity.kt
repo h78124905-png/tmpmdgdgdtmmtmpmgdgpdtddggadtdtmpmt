@@ -15,6 +15,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
@@ -42,7 +43,7 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 private fun ChatApp() {
-    val activity = LocalActivity.current
+    val activity = LocalContext.current as ComponentActivity
     val engine = remember { LlamaEngine() }
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
@@ -159,8 +160,6 @@ private fun ChatApp() {
         )
     }
 }
-
-private val LocalActivity = staticCompositionLocalOf<ComponentActivity> { error("Activity not provided") }
 
 @Composable
 private fun ModelCard(title: String, slot: ModelSlot, onPick: () -> Unit, onLoad: () -> Unit) {

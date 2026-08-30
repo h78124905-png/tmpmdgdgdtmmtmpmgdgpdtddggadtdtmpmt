@@ -5,6 +5,10 @@ plugins {
 }
 
 android {
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
     namespace = "com.example.lfmmobile"
     compileSdk = 36
 
@@ -42,6 +46,10 @@ android {
             useLegacyPackaging = false
         }
     }
+}
+
+kotlin {
+    jvmToolchain(17)
 }
 
 dependencies {

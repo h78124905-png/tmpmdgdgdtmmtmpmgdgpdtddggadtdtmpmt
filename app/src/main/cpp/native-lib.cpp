@@ -122,7 +122,7 @@ Java_com_example_lfmmobile_LlamaEngine_nativeGenerate(
     std::string output;
     const int limit = std::max(1, static_cast<int>(max_tokens));
     for (int i = 0; i < limit; ++i) {
-        const llama_token token = llama_sampler_sample(g_engine.sampler, g_engine.context, -1);
+        llama_token token = llama_sampler_sample(g_engine.sampler, g_engine.context, -1);
         if (llama_vocab_is_eog(g_engine.vocab, token)) break;
 
         output += token_piece(token);

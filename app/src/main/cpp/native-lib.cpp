@@ -1,6 +1,5 @@
 #include <jni.h>
 #include <android/log.h>
-#include <unistd.h>
 #include <algorithm>
 #include <exception>
 #include <string>
@@ -30,24 +29,31 @@ void free_engine() {
     g_engine.context = nullptr;
     g_engine.vocab = nullptr;
 }
+
 void set_error(const std::string & s) {
     g_engine.last_error = s;
     LOGE("%s", s.c_str());
 }
-std::string fd_path(int fd) { return "/proc/self/fd/" + std::to_string(fd); }
-std::string get_prompt(JNIEnv * env, jstring prompt) {
-    const char * chars = env->GetStringUTFChars(prompt, nullptr);
+
+std::string get_string(JNIEnv * env, jstring value) {
+    if (!value) return {};
+    const char * chars = env->GetStringUTFChars(value, nullptr);
     if (!chars) return {};
-    std::string text(chars);
-    env->ReleaseStringUTFChars(prompt, chars);
-    return text;
+    std::string result(chars);
+    env->ReleaseStringUTFChars(value, chars);
+    return result;
 }
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
-Java_com_example_lfmmobile_LlamaEngine_nativeLoadModelFromFd(
-        JNIEnv *, jobject, jint model_fd, jint context_size) {
-    if (model_fd < 0) return JNI_FALSE;
+Java_com_example_lfmmobile_LlamaEngine_nativeLoadModelFromPath(
+        JNIEnv * env, jobject, jstring model_path, jint context_size) {
+    const std::string path = get_string(env, model_path);
+    if (path.empty()) {
+        set_error("stage=path; model path is empty");
+        return JNI_FALSE;
+    }
+
     free_engine();
     g_engine.last_error.clear();
     common_init();
@@ -55,7 +61,7 @@ Java_com_example_lfmmobile_LlamaEngine_nativeLoadModelFromFd(
 
     try {
         common_params params;
-        params.model.path = fd_path(model_fd);
+        params.model.path = path;
         params.n_ctx = std::max(512, static_cast<int>(context_size));
         params.n_batch = std::min(params.n_ctx, 512);
         params.n_ubatch = std::min(params.n_batch, 512);
@@ -64,7 +70,6 @@ Java_com_example_lfmmobile_LlamaEngine_nativeLoadModelFromFd(
         auto init = common_init_from_params(params);
         if (!init || !init->model() || !init->context()) {
             set_error("stage=model_or_context_init; llama.cpp could not initialize the selected GGUF");
-            close(model_fd);
             return JNI_FALSE;
         }
 
@@ -75,11 +80,9 @@ Java_com_example_lfmmobile_LlamaEngine_nativeLoadModelFromFd(
         auto sampler = common_sampler_init(init->model(), sampling);
         if (!sampler) {
             set_error("stage=sampler_init; model loaded but sampler initialization failed");
-            close(model_fd);
             return JNI_FALSE;
         }
 
-        close(model_fd);
         g_engine.init = std::move(init);
         g_engine.sampler.reset(sampler);
         g_engine.model = g_engine.init->model();
@@ -88,12 +91,10 @@ Java_com_example_lfmmobile_LlamaEngine_nativeLoadModelFromFd(
         return JNI_TRUE;
     } catch (const std::exception & e) {
         set_error(std::string("stage=exception; ") + e.what());
-        close(model_fd);
         free_engine();
         return JNI_FALSE;
     } catch (...) {
         set_error("stage=exception; unknown native exception");
-        close(model_fd);
         free_engine();
         return JNI_FALSE;
     }
@@ -110,7 +111,7 @@ Java_com_example_lfmmobile_LlamaEngine_nativeGenerate(
     if (!g_engine.model || !g_engine.context || !g_engine.sampler)
         return env->NewStringUTF("[model not loaded]");
 
-    const std::string prompt_text = get_prompt(env, prompt);
+    const std::string prompt_text = get_string(env, prompt);
     if (prompt_text.empty()) return env->NewStringUTF("");
 
     llama_memory_clear(llama_get_memory(g_engine.context), false);

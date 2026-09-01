@@ -103,7 +103,11 @@ Java_com_example_lfmmobile_LlamaEngine_nativeGenerate(
     if (prompt_text.empty()) return env->NewStringUTF("");
 
     llama_memory_clear(llama_get_memory(g_engine.context), false);
-    g_engine.sampler.reset(common_sampler_init(g_engine.model, common_params_sampling{}));
+    common_params_sampling sampling;
+    sampling.temp = 0.7f;
+    sampling.top_k = 40;
+    sampling.top_p = 0.95f;
+    g_engine.sampler.reset(common_sampler_init(g_engine.model, sampling));
     if (!g_engine.sampler) return env->NewStringUTF("[sampler init failed]");
 
     const llama_tokens input = common_tokenize(g_engine.context, prompt_text, true, true);
@@ -133,7 +137,7 @@ Java_com_example_lfmmobile_LlamaEngine_nativeGenerate(
         if (llama_vocab_is_eog(g_engine.vocab, next)) break;
 
         output += common_token_to_piece(g_engine.context, next);
-        common_sampler_accept(g_engine.sampler.get(), next);
+        common_sampler_accept(g_engine.sampler.get(), next, true);
 
         common_batch_clear(batch);
         common_batch_add(batch, next, n_past++, {0}, true);

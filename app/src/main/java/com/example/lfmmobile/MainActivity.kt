@@ -21,6 +21,7 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 
 private data class Message(val user: Boolean, val text: String, val sources: List<SearchResult> = emptyList())
 private data class ModelSlot(val uri: String = "", val name: String = "")
@@ -77,23 +78,32 @@ private fun ChatApp() {
     fun loadModel() {
         if (target.uri.isEmpty()) return
         scope.launch {
-            loadError = ""
+            loaded = false
+            loadError = "Copying model to app storage…"
             val result = withContext(Dispatchers.IO) {
-                val pfd = activity.contentResolver.openFileDescriptor(Uri.parse(target.uri), "r")
-                if (pfd == null) {
-                    false to "Could not open the selected model file."
-                } else {
-                    var fd = -1
-                    try {
-                        fd = pfd.detachFd()
-                        val ok = engine.loadModelFromFd(fd, contextSize)
-                        val error = if (ok) "" else engine.lastError().ifBlank { "llama.cpp could not load the selected model." }
-                        ok to error
-                    } catch (e: Exception) {
-                        false to (e.message ?: "Could not load the selected model.")
-                    } finally {
-                        if (fd < 0) pfd.close()
+                try {
+                    val uri = Uri.parse(target.uri)
+                    val sourceName = target.name.ifBlank { "model.gguf" }
+                    val safeName = sourceName.replace(Regex("[^A-Za-z0-9._-]"), "_")
+                    val modelDir = File(activity.filesDir, "models")
+                    if (!modelDir.exists() && !modelDir.mkdirs()) {
+                        return@withContext false to "stage=storage; could not create app model directory"
                     }
+                    val modelFile = File(modelDir, safeName)
+                    val input = activity.contentResolver.openInputStream(uri)
+                        ?: return@withContext false to "stage=storage; could not open selected model"
+                    input.use { source ->
+                        modelFile.outputStream().use { destination ->
+                            source.copyTo(destination, 1024 * 1024)
+                        }
+                    }
+                    if (!modelFile.isFile || modelFile.length() == 0L) {
+                        return@withContext false to "stage=storage; copied model is empty"
+                    }
+                    val ok = engine.loadModelFromPath(modelFile.absolutePath, contextSize)
+                    ok to if (ok) "" else engine.lastError()
+                } catch (e: Exception) {
+                    false to "stage=storage; ${e.message ?: "could not copy/load model"}"
                 }
             }
             loaded = result.first

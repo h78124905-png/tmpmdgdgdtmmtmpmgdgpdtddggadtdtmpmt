@@ -24,8 +24,6 @@ import kotlinx.coroutines.withContext
 
 private data class Message(val user: Boolean, val text: String, val sources: List<SearchResult> = emptyList())
 private data class ModelSlot(val uri: String = "", val name: String = "")
-private const val TARGET = 0
-private const val DSPARK = 1
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -49,7 +47,6 @@ private fun ChatApp() {
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
     var target by remember { mutableStateOf(ModelSlot()) }
-    var dspark by remember { mutableStateOf(ModelSlot()) }
     var messages by remember { mutableStateOf(listOf<Message>()) }
     var prompt by remember { mutableStateOf("") }
     var generating by remember { mutableStateOf(false) }
@@ -57,16 +54,14 @@ private fun ChatApp() {
     var showModels by remember { mutableStateOf(false) }
     var contextSize by remember { mutableIntStateOf(4096) }
     var maxTokens by remember { mutableIntStateOf(512) }
-    var draftMax by remember { mutableIntStateOf(7) }
     var webMode by remember { mutableStateOf(true) }
     var loaded by remember { mutableStateOf(false) }
     var loadError by remember { mutableStateOf("") }
 
-    val pickerRole = remember { mutableIntStateOf(TARGET) }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         uri ?: return@rememberLauncherForActivityResult
         val name = activity.displayName(uri) ?: uri.lastPathSegment?.substringAfterLast('/') ?: "model.gguf"
-        if (pickerRole.intValue == TARGET) target = ModelSlot(uri.toString(), name) else dspark = ModelSlot(uri.toString(), name)
+        target = ModelSlot(uri.toString(), name)
         loaded = false
         loadError = ""
     }
@@ -75,31 +70,27 @@ private fun ChatApp() {
         if (messages.isNotEmpty()) listState.animateScrollToItem(messages.lastIndex)
     }
 
-    fun choose(role: Int) {
-        pickerRole.intValue = role
+    fun chooseTarget() {
         picker.launch(arrayOf("application/octet-stream", "application/x-gguf", "*/*"))
     }
 
-    fun loadBoth() {
-        if (target.uri.isEmpty() || dspark.uri.isEmpty()) return
+    fun loadModel() {
+        if (target.uri.isEmpty()) return
         scope.launch {
             loadError = ""
             val result = withContext(Dispatchers.IO) {
                 val targetPfd = activity.contentResolver.openFileDescriptor(Uri.parse(target.uri), "r")
-                val draftPfd = activity.contentResolver.openFileDescriptor(Uri.parse(dspark.uri), "r")
-                if (targetPfd == null || draftPfd == null) {
-                    targetPfd?.close(); draftPfd?.close()
-                    false to "Could not open one of the selected model files."
+                if (targetPfd == null) {
+                    false to "Could not open the selected model file."
                 } else {
                     try {
                         val targetFd = targetPfd.detachFd()
-                        val draftFd = draftPfd.detachFd()
-                        val ok = engine.loadModelsFromFds(targetFd, draftFd, contextSize, draftMax)
-                        ok to if (ok) "" else "llama.cpp could not load the target/dSpark pair. Check that the dSpark checkpoint matches the target model."
+                        val ok = engine.loadModelFromFd(targetFd, contextSize)
+                        ok to if (ok) "" else "llama.cpp could not load the selected model."
                     } catch (e: Exception) {
                         false to (e.message ?: "Could not load the selected models.")
                     } finally {
-                        targetPfd.close(); draftPfd.close()
+                        targetPfd.close()
                     }
                 }
             }
@@ -157,7 +148,7 @@ private fun ChatApp() {
                     Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                         FilterChip(selected = webMode, onClick = { webMode = !webMode }, label = { Text(if (webMode) "Web search: Auto" else "Web search: Off") })
                         Spacer(Modifier.weight(1f))
-                        Text(if (loaded) "DSpark ready" else "Models not loaded", style = MaterialTheme.typography.bodySmall)
+                        Text(if (loaded) "Ready" else "Model not loaded", style = MaterialTheme.typography.bodySmall)
                     }
                     LazyColumn(
                         state = listState,
@@ -165,7 +156,7 @@ private fun ChatApp() {
                         verticalArrangement = Arrangement.spacedBy(14.dp),
                         contentPadding = PaddingValues(vertical = 18.dp)
                     ) {
-                        if (messages.isEmpty()) item { Welcome(target, dspark, loaded) }
+                        if (messages.isEmpty()) item { Welcome(target, loaded) }
                         items(messages) { MessageBubble(it) }
                         if (searching) item { Text("Searching the web…", Modifier.padding(start = 12.dp)) }
                         if (generating) item { Text("Thinking…", Modifier.padding(start = 12.dp)) }
@@ -189,15 +180,13 @@ private fun ChatApp() {
             onDismissRequest = { showModels = false }, title = { Text("Models") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    ModelCard("Target model", target) { choose(TARGET) }
-                    ModelCard("dSpark model", dspark) { choose(DSPARK) }
+                    ModelCard("Target model", target) { chooseTarget() }
                     HorizontalDivider()
                     OutlinedTextField(contextSize.toString(), { it.toIntOrNull()?.coerceIn(512, 131072)?.let { v -> contextSize = v; loaded = false } }, label = { Text("Context size") }, singleLine = true)
                     OutlinedTextField(maxTokens.toString(), { it.toIntOrNull()?.coerceIn(1, 8192)?.let { v -> maxTokens = v } }, label = { Text("Max tokens") }, singleLine = true)
-                    OutlinedTextField(draftMax.toString(), { it.toIntOrNull()?.coerceIn(1, 16)?.let { v -> draftMax = v; loaded = false } }, label = { Text("DSpark draft tokens") }, singleLine = true)
                     if (loadError.isNotBlank()) Text(loadError, color = MaterialTheme.colorScheme.error)
-                    Button(onClick = { loadBoth() }, enabled = target.uri.isNotEmpty() && dspark.uri.isNotEmpty()) { Text(if (loaded) "Reload models" else "Load target + dSpark") }
-                    Text("Dark mode only • DSpark requires a compatible target/draft pair.", style = MaterialTheme.typography.bodySmall)
+                    Button(onClick = { loadModel() }, enabled = target.uri.isNotEmpty()) { Text(if (loaded) "Reload model" else "Load model") }
+                    Text("Dark mode only • llama.cpp", style = MaterialTheme.typography.bodySmall)
                 }
             },
             confirmButton = { TextButton({ showModels = false }) { Text("Done") } }
@@ -218,11 +207,10 @@ private fun ModelCard(title: String, slot: ModelSlot, onPick: () -> Unit) {
 }
 
 @Composable
-private fun Welcome(target: ModelSlot, dspark: ModelSlot, loaded: Boolean) {
+private fun Welcome(target: ModelSlot, loaded: Boolean) {
     Column(Modifier.fillMaxWidth().padding(top = 70.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Text("Local AI", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Medium)
         Text(if (loaded) target.name else "Choose a Target model and matching dSpark model in Models", style = MaterialTheme.typography.bodyMedium)
-        if (dspark.name.isNotEmpty()) Text(dspark.name, style = MaterialTheme.typography.bodySmall)
     }
 }
 

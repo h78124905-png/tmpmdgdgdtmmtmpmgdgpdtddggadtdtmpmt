@@ -79,18 +79,20 @@ private fun ChatApp() {
         scope.launch {
             loadError = ""
             val result = withContext(Dispatchers.IO) {
-                val targetPfd = activity.contentResolver.openFileDescriptor(Uri.parse(target.uri), "r")
-                if (targetPfd == null) {
+                val pfd = activity.contentResolver.openFileDescriptor(Uri.parse(target.uri), "r")
+                if (pfd == null) {
                     false to "Could not open the selected model file."
                 } else {
+                    var fd = -1
                     try {
-                        val targetFd = targetPfd.detachFd()
-                        val ok = engine.loadModelFromFd(targetFd, contextSize)
-                        ok to if (ok) "" else "llama.cpp could not load the selected model."
+                        fd = pfd.detachFd()
+                        val ok = engine.loadModelFromFd(fd, contextSize)
+                        val error = if (ok) "" else engine.lastError().ifBlank { "llama.cpp could not load the selected model." }
+                        ok to error
                     } catch (e: Exception) {
-                        false to (e.message ?: "Could not load the selected models.")
+                        false to (e.message ?: "Could not load the selected model.")
                     } finally {
-                        targetPfd.close()
+                        if (fd < 0) pfd.close()
                     }
                 }
             }
@@ -210,7 +212,7 @@ private fun ModelCard(title: String, slot: ModelSlot, onPick: () -> Unit) {
 private fun Welcome(target: ModelSlot, loaded: Boolean) {
     Column(Modifier.fillMaxWidth().padding(top = 70.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Text("Local AI", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Medium)
-        Text(if (loaded) target.name else "Choose a Target model and matching dSpark model in Models", style = MaterialTheme.typography.bodyMedium)
+        Text(if (loaded) target.name else "Choose a Target model in Models", style = MaterialTheme.typography.bodyMedium)
     }
 }
 

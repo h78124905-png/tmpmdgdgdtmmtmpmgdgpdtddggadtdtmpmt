@@ -6,11 +6,14 @@ class LlamaEngine : AutoCloseable {
     }
 
     private external fun nativeLoadModelFromFd(modelFd: Int, contextSize: Int): Boolean
+    private external fun nativeGetLastError(): String
     private external fun nativeGenerate(prompt: String, maxTokens: Int): String
     private external fun nativeUnloadModel()
 
     fun loadModelFromFd(modelFd: Int, contextSize: Int = 4096): Boolean =
         nativeLoadModelFromFd(modelFd, contextSize)
+
+    fun lastError(): String = nativeGetLastError()
 
     fun generate(prompt: String, maxTokens: Int = 128): String =
         nativeGenerate(prompt, maxTokens)

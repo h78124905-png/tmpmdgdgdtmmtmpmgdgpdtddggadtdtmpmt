@@ -5,13 +5,13 @@ class LlamaEngine : AutoCloseable {
         init { System.loadLibrary("lfm_native") }
     }
 
-    private external fun nativeLoadModelFromFd(modelFd: Int, contextSize: Int): Boolean
+    private external fun nativeLoadModelFromPath(modelPath: String, contextSize: Int): Boolean
     private external fun nativeGetLastError(): String
     private external fun nativeGenerate(prompt: String, maxTokens: Int): String
     private external fun nativeUnloadModel()
 
-    fun loadModelFromFd(modelFd: Int, contextSize: Int = 4096): Boolean =
-        nativeLoadModelFromFd(modelFd, contextSize)
+    fun loadModelFromPath(modelPath: String, contextSize: Int = 4096): Boolean =
+        nativeLoadModelFromPath(modelPath, contextSize)
 
     fun lastError(): String = nativeGetLastError()
 

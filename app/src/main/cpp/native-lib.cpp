@@ -19,6 +19,7 @@ struct Engine {
     llama_model * model = nullptr;
     llama_context * context = nullptr;
     const llama_vocab * vocab = nullptr;
+    std::string last_error;
 };
 Engine g_engine;
 
@@ -28,6 +29,10 @@ void free_engine() {
     g_engine.model = nullptr;
     g_engine.context = nullptr;
     g_engine.vocab = nullptr;
+}
+void set_error(const std::string & s) {
+    g_engine.last_error = s;
+    LOGE("%s", s.c_str());
 }
 std::string fd_path(int fd) { return "/proc/self/fd/" + std::to_string(fd); }
 std::string get_prompt(JNIEnv * env, jstring prompt) {
@@ -44,6 +49,7 @@ Java_com_example_lfmmobile_LlamaEngine_nativeLoadModelFromFd(
         JNIEnv *, jobject, jint model_fd, jint context_size) {
     if (model_fd < 0) return JNI_FALSE;
     free_engine();
+    g_engine.last_error.clear();
     common_init();
     llama_backend_init();
 
@@ -57,7 +63,7 @@ Java_com_example_lfmmobile_LlamaEngine_nativeLoadModelFromFd(
 
         auto init = common_init_from_params(params);
         if (!init || !init->model() || !init->context()) {
-            LOGE("target model initialization failed");
+            set_error("stage=model_or_context_init; llama.cpp could not initialize the selected GGUF");
             close(model_fd);
             return JNI_FALSE;
         }
@@ -68,7 +74,7 @@ Java_com_example_lfmmobile_LlamaEngine_nativeLoadModelFromFd(
         sampling.top_p = 0.95f;
         auto sampler = common_sampler_init(init->model(), sampling);
         if (!sampler) {
-            LOGE("sampler initialization failed");
+            set_error("stage=sampler_init; model loaded but sampler initialization failed");
             close(model_fd);
             return JNI_FALSE;
         }
@@ -81,16 +87,21 @@ Java_com_example_lfmmobile_LlamaEngine_nativeLoadModelFromFd(
         g_engine.vocab = llama_model_get_vocab(g_engine.model);
         return JNI_TRUE;
     } catch (const std::exception & e) {
-        LOGE("model load failed: %s", e.what());
+        set_error(std::string("stage=exception; ") + e.what());
         close(model_fd);
         free_engine();
         return JNI_FALSE;
     } catch (...) {
-        LOGE("model load failed with unknown exception");
+        set_error("stage=exception; unknown native exception");
         close(model_fd);
         free_engine();
         return JNI_FALSE;
     }
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_example_lfmmobile_LlamaEngine_nativeGetLastError(JNIEnv * env, jobject) {
+    return env->NewStringUTF(g_engine.last_error.c_str());
 }
 
 extern "C" JNIEXPORT jstring JNICALL
@@ -128,7 +139,6 @@ Java_com_example_lfmmobile_LlamaEngine_nativeGenerate(
     }
 
     std::string output;
-    llama_token last = input.back();
     int n_past = static_cast<int>(input.size());
     const int n_predict = std::max(1, static_cast<int>(max_tokens));
 
@@ -142,7 +152,6 @@ Java_com_example_lfmmobile_LlamaEngine_nativeGenerate(
         common_batch_clear(batch);
         common_batch_add(batch, next, n_past++, {0}, true);
         if (llama_decode(g_engine.context, batch) != 0) break;
-        last = next;
     }
 
     llama_batch_free(batch);

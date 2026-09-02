@@ -64,13 +64,119 @@ bool load_progress(float progress, void *) {
     }
     return true;
 }
+
+std::vector<common_chat_msg> build_messages(const std::string & prompt_text) {
+    std::vector<common_chat_msg> messages;
+    messages.push_back({"system", "You are a helpful local assistant. Answer naturally and accurately."});
+    size_t pos = 0;
+    while (pos < prompt_text.size()) {
+        const size_t end = prompt_text.find('\n', pos);
+        const std::string line = prompt_text.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
+        if (line.rfind("User: ", 0) == 0) {
+            messages.push_back({"user", line.substr(6)});
+        } else if (line.rfind("Assistant: ", 0) == 0) {
+            messages.push_back({"assistant", line.substr(11)});
+        }
+        if (end == std::string::npos) break;
+        pos = end + 1;
+    }
+    return messages;
+}
+
+std::string generate_impl(JNIEnv * env, const std::string & prompt_text, int max_tokens, jobject callback) {
+    if (!g_engine.model || !g_engine.context || !g_engine.sampler)
+        return "[model not loaded]";
+    if (prompt_text.empty()) return {};
+
+    llama_memory_clear(llama_get_memory(g_engine.context), false);
+    common_params_sampling sampling;
+    sampling.temp = 0.7f;
+    sampling.top_k = 40;
+    sampling.top_p = 0.95f;
+    g_engine.sampler.reset(common_sampler_init(g_engine.model, sampling));
+    if (!g_engine.sampler) return "[sampler init failed]";
+
+    auto messages = build_messages(prompt_text);
+    if (messages.size() <= 1) return "[chat format failed: no user message]";
+
+    auto templates = common_chat_templates_init(g_engine.model, "");
+    if (!templates) return "[chat template init failed]";
+
+    common_chat_templates_inputs chat_inputs;
+    chat_inputs.messages = std::move(messages);
+    chat_inputs.add_generation_prompt = true;
+    chat_inputs.use_jinja = true;
+
+    const common_chat_params chat_params = common_chat_templates_apply(templates.get(), chat_inputs);
+    if (chat_params.prompt.empty()) return "[chat template produced an empty prompt]";
+
+    const llama_tokens input = common_tokenize(g_engine.context, chat_params.prompt, true, true);
+    if (input.empty()) return "[tokenization failed]";
+
+    const uint32_t n_ctx = llama_n_ctx(g_engine.context);
+    if (input.size() + 1 >= n_ctx) return "[prompt exceeds context]";
+
+    const uint32_t batch_size = std::min<uint32_t>(llama_n_batch(g_engine.context), input.size());
+    llama_batch batch = llama_batch_init(batch_size, 0, 1);
+    for (size_t i = 0; i < input.size(); ++i) {
+        const bool want_logits = (i + 1 == input.size());
+        common_batch_add(batch, input[i], static_cast<llama_pos>(i), {0}, want_logits);
+    }
+
+    if (llama_decode(g_engine.context, batch) != 0) {
+        llama_batch_free(batch);
+        return "[prompt decode failed]";
+    }
+
+    jmethodID on_token = nullptr;
+    if (callback) {
+        jclass callback_class = env->GetObjectClass(callback);
+        on_token = env->GetMethodID(callback_class, "onToken", "(Ljava/lang/String;)V");
+        env->DeleteLocalRef(callback_class);
+        if (!on_token) {
+            if (env->ExceptionCheck()) env->ExceptionClear();
+            llama_batch_free(batch);
+            return "[stream callback method not found]";
+        }
+    }
+
+    std::string output;
+    int n_past = static_cast<int>(input.size());
+    const int n_predict = std::max(1, max_tokens);
+
+    for (int i = 0; i < n_predict; ++i) {
+        const llama_token next = common_sampler_sample(g_engine.sampler.get(), g_engine.context, -1);
+        if (llama_vocab_is_eog(g_engine.vocab, next)) break;
+
+        const std::string piece = common_token_to_piece(g_engine.context, next);
+        output += piece;
+
+        if (callback && on_token && !piece.empty()) {
+            jstring jpiece = env->NewStringUTF(piece.c_str());
+            env->CallVoidMethod(callback, on_token, jpiece);
+            env->DeleteLocalRef(jpiece);
+            if (env->ExceptionCheck()) {
+                env->ExceptionClear();
+                llama_batch_free(batch);
+                return "[stream callback failed]";
+            }
+        }
+
+        common_sampler_accept(g_engine.sampler.get(), next, true);
+        common_batch_clear(batch);
+        common_batch_add(batch, next, n_past++, {0}, true);
+        if (llama_decode(g_engine.context, batch) != 0) break;
+    }
+
+    llama_batch_free(batch);
+    return output;
+}
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_example_lfmmobile_LlamaEngine_nativeLoadModelFromPath(
         JNIEnv * env, jobject, jstring model_path, jint context_size) {
     LOGI("[load] JNI entered");
-
     const std::string path = get_string(env, model_path);
     if (path.empty()) {
         set_error("stage=path; model path is empty");
@@ -80,7 +186,6 @@ Java_com_example_lfmmobile_LlamaEngine_nativeLoadModelFromPath(
 
     free_engine();
     g_engine.last_error.clear();
-
     if (!g_engine.backend_initialized) {
         LOGI("[load] llama_backend_init starting");
         llama_backend_init();
@@ -164,84 +269,20 @@ Java_com_example_lfmmobile_LlamaEngine_nativeGetLastError(JNIEnv * env, jobject)
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_example_lfmmobile_LlamaEngine_nativeGenerate(
         JNIEnv * env, jobject, jstring prompt, jint max_tokens) {
-    if (!g_engine.model || !g_engine.context || !g_engine.sampler)
-        return env->NewStringUTF("[model not loaded]");
+    return env->NewStringUTF(generate_impl(env, get_string(env, prompt), max_tokens, nullptr).c_str());
+}
 
-    const std::string prompt_text = get_string(env, prompt);
-    if (prompt_text.empty()) return env->NewStringUTF("");
-
-    llama_memory_clear(llama_get_memory(g_engine.context), false);
-    common_params_sampling sampling;
-    sampling.temp = 0.7f;
-    sampling.top_k = 40;
-    sampling.top_p = 0.95f;
-    g_engine.sampler.reset(common_sampler_init(g_engine.model, sampling));
-    if (!g_engine.sampler) return env->NewStringUTF("[sampler init failed]");
-
-    std::vector<common_chat_msg> messages;
-    messages.push_back({"system", "You are a helpful local assistant. Answer naturally and accurately."});
-    size_t pos = 0;
-    while (pos < prompt_text.size()) {
-        const size_t end = prompt_text.find('\n', pos);
-        const std::string line = prompt_text.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
-        if (line.rfind("User: ", 0) == 0) {
-            messages.push_back({"user", line.substr(6)});
-        } else if (line.rfind("Assistant: ", 0) == 0) {
-            messages.push_back({"assistant", line.substr(11)});
-        }
-        if (end == std::string::npos) break;
-        pos = end + 1;
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_example_lfmmobile_LlamaEngine_nativeGenerateStream(
+        JNIEnv * env, jobject, jstring prompt, jint max_tokens, jobject callback) {
+    try {
+        const std::string result = generate_impl(env, get_string(env, prompt), max_tokens, callback);
+        return env->NewStringUTF(result.c_str());
+    } catch (const std::exception & e) {
+        return env->NewStringUTF((std::string("[stream exception] ") + e.what()).c_str());
+    } catch (...) {
+        return env->NewStringUTF("[stream exception]");
     }
-    if (messages.size() <= 1) return env->NewStringUTF("[chat format failed: no user message]");
-
-    auto templates = common_chat_templates_init(g_engine.model, "");
-    if (!templates) return env->NewStringUTF("[chat template init failed]");
-
-    common_chat_templates_inputs chat_inputs;
-    chat_inputs.messages = std::move(messages);
-    chat_inputs.add_generation_prompt = true;
-    chat_inputs.use_jinja = true;
-
-    const common_chat_params chat_params = common_chat_templates_apply(templates.get(), chat_inputs);
-    if (chat_params.prompt.empty()) return env->NewStringUTF("[chat template produced an empty prompt]");
-
-    const llama_tokens input = common_tokenize(g_engine.context, chat_params.prompt, true, true);
-    if (input.empty()) return env->NewStringUTF("[tokenization failed]");
-
-    const uint32_t n_ctx = llama_n_ctx(g_engine.context);
-    if (input.size() + 1 >= n_ctx)
-        return env->NewStringUTF("[prompt exceeds context]");
-
-    const uint32_t batch_size = std::min<uint32_t>(llama_n_batch(g_engine.context), input.size());
-    llama_batch batch = llama_batch_init(batch_size, 0, 1);
-    for (size_t i = 0; i < input.size(); ++i) {
-        const bool want_logits = (i + 1 == input.size());
-        common_batch_add(batch, input[i], static_cast<llama_pos>(i), {0}, want_logits);
-    }
-
-    if (llama_decode(g_engine.context, batch) != 0) {
-        llama_batch_free(batch);
-        return env->NewStringUTF("[prompt decode failed]");
-    }
-
-    std::string output;
-    int n_past = static_cast<int>(input.size());
-    const int n_predict = std::max(1, static_cast<int>(max_tokens));
-
-    for (int i = 0; i < n_predict; ++i) {
-        const llama_token next = common_sampler_sample(g_engine.sampler.get(), g_engine.context, -1);
-        if (llama_vocab_is_eog(g_engine.vocab, next)) break;
-
-        output += common_token_to_piece(g_engine.context, next);
-        common_sampler_accept(g_engine.sampler.get(), next, true);
-
-        common_batch_clear(batch);
-        common_batch_add(batch, next, n_past++, {0}, true);
-        if (llama_decode(g_engine.context, batch) != 0) break;
-    }
-
-    llama_batch_free(batch);
-    return env->NewStringUTF(output.c_str());
 }
 
 extern "C" JNIEXPORT void JNICALL

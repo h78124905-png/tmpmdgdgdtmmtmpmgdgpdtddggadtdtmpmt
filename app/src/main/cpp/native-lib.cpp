@@ -195,17 +195,20 @@ Java_com_example_lfmmobile_LlamaEngine_nativeLoadModelFromPath(
 
     try {
         llama_model_params model_params = llama_model_default_params();
-        model_params.n_gpu_layers = 0;
+        // Use all eligible layers on the Vulkan backend. If Vulkan cannot be
+        // initialized on a device, llama.cpp can report the backend failure
+        // instead of silently pretending this is a CPU-only build.
+        model_params.n_gpu_layers = -1;
         model_params.progress_callback = load_progress;
         model_params.progress_callback_user_data = nullptr;
 
-        LOGI("[load] model load starting (CPU, direct llama API)");
+        LOGI("[load] model load starting (Vulkan GPU offload)");
         llama_model * model = llama_model_load_from_file(path.c_str(), model_params);
         if (!model) {
-            set_error("stage=model_load; llama_model_load_from_file returned null");
+            set_error("stage=model_load; llama_model_load_from_file returned null (Vulkan backend may be unavailable)");
             return JNI_FALSE;
         }
-        LOGI("[load] model load completed");
+        LOGI("[load] model load completed with Vulkan GPU offload requested");
 
         const llama_vocab * vocab = llama_model_get_vocab(model);
         if (!vocab) {
@@ -248,7 +251,7 @@ Java_com_example_lfmmobile_LlamaEngine_nativeLoadModelFromPath(
         g_engine.context = context;
         g_engine.vocab = vocab;
         g_engine.sampler.reset(sampler);
-        LOGI("[load] model load completed successfully");
+        LOGI("[load] model load completed successfully (Vulkan GPU offload requested)");
         return JNI_TRUE;
     } catch (const std::exception & e) {
         set_error(std::string("stage=exception; ") + e.what());

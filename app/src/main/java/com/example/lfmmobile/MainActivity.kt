@@ -67,6 +67,10 @@ private fun ChatApp() {
         loadError = ""
     }
 
+    DisposableEffect(Unit) {
+        onDispose { engine.close() }
+    }
+
     LaunchedEffect(messages.size, generating, searching) {
         if (messages.isNotEmpty()) listState.animateScrollToItem(messages.lastIndex)
     }
@@ -90,15 +94,26 @@ private fun ChatApp() {
                         return@withContext false to "stage=storage; could not create app model directory"
                     }
                     val modelFile = File(modelDir, safeName)
+                    val tempFile = File(modelDir, "$safeName.part")
                     val input = activity.contentResolver.openInputStream(uri)
                         ?: return@withContext false to "stage=storage; could not open selected model"
                     input.use { source ->
-                        modelFile.outputStream().use { destination ->
+                        tempFile.outputStream().use { destination ->
                             source.copyTo(destination, 1024 * 1024)
+                            destination.fd.sync()
                         }
                     }
-                    if (!modelFile.isFile || modelFile.length() == 0L) {
+                    if (!tempFile.isFile || tempFile.length() == 0L) {
+                        tempFile.delete()
                         return@withContext false to "stage=storage; copied model is empty"
+                    }
+                    if (modelFile.exists() && !modelFile.delete()) {
+                        tempFile.delete()
+                        return@withContext false to "stage=storage; could not replace existing model"
+                    }
+                    if (!tempFile.renameTo(modelFile)) {
+                        tempFile.delete()
+                        return@withContext false to "stage=storage; could not finalize model file"
                     }
                     val ok = engine.loadModelFromPath(modelFile.absolutePath, contextSize)
                     ok to if (ok) "" else engine.lastError()

@@ -53,7 +53,7 @@ private fun ChatApp() {
     var generating by remember { mutableStateOf(false) }
     var searching by remember { mutableStateOf(false) }
     var showModels by remember { mutableStateOf(false) }
-    var contextSize by remember { mutableIntStateOf(4096) }
+    var contextSize by remember { mutableIntStateOf(2048) }
     var maxTokens by remember { mutableIntStateOf(512) }
     var webMode by remember { mutableStateOf(true) }
     var loaded by remember { mutableStateOf(false) }
@@ -115,6 +115,7 @@ private fun ChatApp() {
                         tempFile.delete()
                         return@withContext false to "stage=storage; could not finalize model file"
                     }
+                    loadError = "Loading GGUF…"
                     val ok = engine.loadModelFromPath(modelFile.absolutePath, contextSize)
                     ok to if (ok) "" else engine.lastError()
                 } catch (e: Exception) {

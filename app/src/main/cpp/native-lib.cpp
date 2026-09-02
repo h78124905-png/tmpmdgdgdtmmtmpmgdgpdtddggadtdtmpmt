@@ -12,21 +12,29 @@
 
 #define LOG_TAG "LfmMobile"
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 
 namespace {
 struct Engine {
-    common_init_result_ptr init;
     common_sampler_ptr sampler;
     llama_model * model = nullptr;
     llama_context * context = nullptr;
     const llama_vocab * vocab = nullptr;
     std::string last_error;
+    bool backend_initialized = false;
 };
 Engine g_engine;
 
 void free_engine() {
     g_engine.sampler.reset();
-    g_engine.init.reset();
+    if (g_engine.context) {
+        LOGI("[load] freeing context");
+        llama_free(g_engine.context);
+    }
+    if (g_engine.model) {
+        LOGI("[load] freeing model");
+        llama_model_free(g_engine.model);
+    }
     g_engine.model = nullptr;
     g_engine.context = nullptr;
     g_engine.vocab = nullptr;
@@ -45,59 +53,99 @@ std::string get_string(JNIEnv * env, jstring value) {
     env->ReleaseStringUTFChars(value, chars);
     return result;
 }
+
+bool load_progress(float progress, void *) {
+    static int last_percent = -1;
+    const int percent = std::clamp(static_cast<int>(progress * 100.0f), 0, 100);
+    if (percent == 100 || percent >= last_percent + 10) {
+        last_percent = percent;
+        LOGI("[load] llama_model_load_from_file progress=%d%%", percent);
+    }
+    return true;
+}
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_example_lfmmobile_LlamaEngine_nativeLoadModelFromPath(
         JNIEnv * env, jobject, jstring model_path, jint context_size) {
+    LOGI("[load] JNI entered");
+
     const std::string path = get_string(env, model_path);
     if (path.empty()) {
         set_error("stage=path; model path is empty");
         return JNI_FALSE;
     }
+    LOGI("[load] path obtained: %s", path.c_str());
 
     free_engine();
     g_engine.last_error.clear();
-    common_init();
-    llama_backend_init();
+
+    if (!g_engine.backend_initialized) {
+        LOGI("[load] llama_backend_init starting");
+        llama_backend_init();
+        g_engine.backend_initialized = true;
+        LOGI("[load] llama_backend_init completed");
+    }
 
     try {
-        common_params params;
-        params.model.path = path;
-        params.n_ctx = std::max(512, static_cast<int>(context_size));
-        params.n_batch = std::min(params.n_ctx, 512);
-        params.n_ubatch = std::min(params.n_batch, 512);
-        params.n_parallel = 1;
+        // Load the GGUF directly through the public llama.cpp API.  This deliberately
+        // avoids common_init_from_params so model loading and context creation can be
+        // diagnosed independently on Android.
+        llama_model_params model_params = llama_model_default_params();
+        model_params.n_gpu_layers = 0; // force CPU on Android; do not probe unavailable GPU backends
+        model_params.progress_callback = load_progress;
+        model_params.progress_callback_user_data = nullptr;
 
-        auto init = common_init_from_params(params);
-        if (!init) {
-            set_error("stage=model_init; common_init_from_params returned no result");
+        LOGI("[load] model load starting (CPU, direct llama API)");
+        llama_model * model = llama_model_load_from_file(path.c_str(), model_params);
+        if (!model) {
+            set_error("stage=model_load; llama_model_load_from_file returned null");
             return JNI_FALSE;
         }
-        if (!init->model()) {
-            set_error("stage=model_init; llama.cpp could not load the selected GGUF");
+        LOGI("[load] model load completed");
+
+        const llama_vocab * vocab = llama_model_get_vocab(model);
+        if (!vocab) {
+            llama_model_free(model);
+            set_error("stage=model_validation; loaded model has no vocabulary");
             return JNI_FALSE;
         }
-        if (!init->context()) {
-            set_error("stage=context_init; GGUF loaded but llama.cpp could not create the context");
+
+        llama_context_params context_params = llama_context_default_params();
+        context_params.n_ctx = std::max(512, static_cast<int>(context_size));
+        context_params.n_batch = std::min(context_params.n_ctx, 256u);
+        context_params.n_ubatch = std::min(context_params.n_batch, 256u);
+        context_params.n_seq_max = 1;
+        context_params.n_threads = std::max(1, static_cast<int>(std::thread::hardware_concurrency() / 2));
+        context_params.n_threads_batch = context_params.n_threads;
+
+        LOGI("[load] context creation starting: n_ctx=%u n_batch=%u threads=%d",
+             context_params.n_ctx, context_params.n_batch, context_params.n_threads);
+        llama_context * context = llama_init_from_model(model, context_params);
+        if (!context) {
+            llama_model_free(model);
+            set_error("stage=context_init; GGUF loaded but llama_init_from_model returned null");
             return JNI_FALSE;
         }
+        LOGI("[load] context creation completed");
 
         common_params_sampling sampling;
         sampling.temp = 0.7f;
         sampling.top_k = 40;
         sampling.top_p = 0.95f;
-        auto sampler = common_sampler_init(init->model(), sampling);
+        auto sampler = common_sampler_init(model, sampling);
         if (!sampler) {
-            set_error("stage=sampler_init; model loaded but sampler initialization failed");
+            llama_free(context);
+            llama_model_free(model);
+            set_error("stage=sampler_init; model and context loaded but sampler initialization failed");
             return JNI_FALSE;
         }
 
-        g_engine.init = std::move(init);
+        g_engine.model = model;
+        g_engine.context = context;
+        g_engine.vocab = vocab;
         g_engine.sampler.reset(sampler);
-        g_engine.model = g_engine.init->model();
-        g_engine.context = g_engine.init->context();
-        g_engine.vocab = llama_model_get_vocab(g_engine.model);
+        LOGI("[load] model load completed successfully");
         return JNI_TRUE;
     } catch (const std::exception & e) {
         set_error(std::string("stage=exception; ") + e.what());
@@ -132,7 +180,6 @@ Java_com_example_lfmmobile_LlamaEngine_nativeGenerate(
     g_engine.sampler.reset(common_sampler_init(g_engine.model, sampling));
     if (!g_engine.sampler) return env->NewStringUTF("[sampler init failed]");
 
-    // Convert the UI transcript into structured messages and use the GGUF chat template.
     std::vector<common_chat_msg> messages;
     messages.push_back({"system", "You are a helpful local assistant. Answer naturally and accurately."});
     size_t pos = 0;
@@ -202,5 +249,9 @@ Java_com_example_lfmmobile_LlamaEngine_nativeGenerate(
 extern "C" JNIEXPORT void JNICALL
 Java_com_example_lfmmobile_LlamaEngine_nativeUnloadModel(JNIEnv *, jobject) {
     free_engine();
-    llama_backend_free();
+    if (g_engine.backend_initialized) {
+        LOGI("[load] llama_backend_free");
+        llama_backend_free();
+        g_engine.backend_initialized = false;
+    }
 }

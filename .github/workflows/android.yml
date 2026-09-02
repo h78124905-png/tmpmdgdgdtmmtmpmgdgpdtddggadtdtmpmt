@@ -31,6 +31,13 @@ jobs:
           yes | sdkmanager --licenses >/dev/null || true
           sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;27.2.12479018" "cmake;3.31.6"
 
+      - name: Install Vulkan shader compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y glslc spirv-headers
+          command -v glslc
+          glslc --version
+
       - name: Locate Android Build Tools
         shell: bash
         run: |

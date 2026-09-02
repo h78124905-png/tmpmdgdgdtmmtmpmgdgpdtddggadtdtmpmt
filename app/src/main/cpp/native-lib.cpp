@@ -8,6 +8,7 @@
 #include "llama.h"
 #include "common.h"
 #include "sampling.h"
+#include "chat.h"
 
 #define LOG_TAG "LfmMobile"
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
@@ -131,7 +132,35 @@ Java_com_example_lfmmobile_LlamaEngine_nativeGenerate(
     g_engine.sampler.reset(common_sampler_init(g_engine.model, sampling));
     if (!g_engine.sampler) return env->NewStringUTF("[sampler init failed]");
 
-    const llama_tokens input = common_tokenize(g_engine.context, prompt_text, true, true);
+    // Convert the UI transcript into structured messages and use the GGUF chat template.
+    std::vector<common_chat_msg> messages;
+    messages.push_back({"system", "You are a helpful local assistant. Answer naturally and accurately."});
+    size_t pos = 0;
+    while (pos < prompt_text.size()) {
+        const size_t end = prompt_text.find('\n', pos);
+        const std::string line = prompt_text.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
+        if (line.rfind("User: ", 0) == 0) {
+            messages.push_back({"user", line.substr(6)});
+        } else if (line.rfind("Assistant: ", 0) == 0) {
+            messages.push_back({"assistant", line.substr(11)});
+        }
+        if (end == std::string::npos) break;
+        pos = end + 1;
+    }
+    if (messages.size() <= 1) return env->NewStringUTF("[chat format failed: no user message]");
+
+    auto templates = common_chat_templates_init(g_engine.model, "");
+    if (!templates) return env->NewStringUTF("[chat template init failed]");
+
+    common_chat_templates_inputs chat_inputs;
+    chat_inputs.messages = std::move(messages);
+    chat_inputs.add_generation_prompt = true;
+    chat_inputs.use_jinja = true;
+
+    const common_chat_params chat_params = common_chat_templates_apply(templates.get(), chat_inputs);
+    if (chat_params.prompt.empty()) return env->NewStringUTF("[chat template produced an empty prompt]");
+
+    const llama_tokens input = common_tokenize(g_engine.context, chat_params.prompt, true, true);
     if (input.empty()) return env->NewStringUTF("[tokenization failed]");
 
     const uint32_t n_ctx = llama_n_ctx(g_engine.context);

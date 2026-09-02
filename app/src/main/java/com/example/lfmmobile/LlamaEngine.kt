@@ -20,10 +20,13 @@ class LlamaEngine : AutoCloseable {
         nativeGenerate(prompt, maxTokens)
 
     fun generateStream(prompt: String, maxTokens: Int = 128, onToken: (String) -> Unit): String {
+        // Keep a different name for the Kotlin lambda so the callback method
+        // does not accidentally call itself recursively.
+        val emitToken = onToken
         val callback = object {
             @Suppress("unused")
             fun onToken(text: String) {
-                onToken(text)
+                emitToken(text)
             }
         }
         return nativeGenerateStream(prompt, maxTokens, callback)

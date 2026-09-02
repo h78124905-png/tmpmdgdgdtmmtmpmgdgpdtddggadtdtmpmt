@@ -20,11 +20,13 @@ set(GGML_NATIVE OFF CACHE BOOL "" FORCE)
 set(GGML_VULKAN ON CACHE BOOL "" FORCE)
 set(GGML_VULKAN_CHECK_RESULTS OFF CACHE BOOL "" FORCE)
 set(GGML_VULKAN_DEBUG OFF CACHE BOOL "" FORCE)
+set(GGML_VULKAN_RUN_TESTS OFF CACHE BOOL "" FORCE)
 set(GGML_LTO ON CACHE BOOL "" FORCE)
 
-# CMake's FindVulkan must be pointed at the Android NDK's Vulkan loader and
-# headers. Without these hints it can discover the Linux host Vulkan SDK,
-# which is the wrong architecture for the arm64-v8a Android target.
+# Android's NDK supplies the Vulkan loader library, while the host Linux
+# packages supply the C++ Vulkan header (vulkan.hpp) and SPIR-V headers used
+# by llama.cpp's Vulkan backend. Keeping these roles separate avoids trying
+# to link the Android build against a Linux Vulkan library.
 if (ANDROID AND CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux")
     set(_android_ndk "${ANDROID_NDK}")
     if (NOT _android_ndk)
@@ -32,15 +34,18 @@ if (ANDROID AND CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux")
     endif()
 
     if (_android_ndk)
-        set(Vulkan_INCLUDE_DIR
-            "${_android_ndk}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include"
-            CACHE PATH "Android NDK Vulkan headers" FORCE)
         set(Vulkan_LIBRARY
             "${_android_ndk}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/26/libvulkan.so"
             CACHE FILEPATH "Android NDK Vulkan loader" FORCE)
         set(Vulkan_GLSLC_EXECUTABLE
             "${_android_ndk}/shader-tools/linux-x86_64/glslc"
             CACHE FILEPATH "Android NDK host glslc" FORCE)
+    endif()
+
+    # ggml-vulkan needs vulkan/vulkan.hpp, which is not provided by the NDK
+    # sysroot. libvulkan-dev installs it under /usr/include/vulkan.
+    if (EXISTS "/usr/include/vulkan/vulkan.hpp")
+        set(Vulkan_INCLUDE_DIR "/usr/include" CACHE PATH "Host Vulkan headers" FORCE)
     endif()
 
     # Ubuntu's spirv-headers package installs its CMake package below
@@ -51,9 +56,6 @@ if (ANDROID AND CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux")
     endif()
 endif()
 
-# Pin the upstream revision used by the Android host. Use a full clone so
-# CMake/Git can reliably check out an exact commit instead of depending on
-# GitHub's shallow-clone handling of a raw SHA.
 FetchContent_Declare(
     llama_cpp
     GIT_REPOSITORY https://github.com/ggml-org/llama.cpp.git
@@ -61,6 +63,12 @@ FetchContent_Declare(
     GIT_SHALLOW FALSE
 )
 FetchContent_MakeAvailable(llama_cpp)
+
+# The Vulkan backend is compiled as part of ggml. Add the host Vulkan include
+# directory explicitly as a final safeguard for vulkan.hpp when cross-building.
+if (ANDROID AND TARGET ggml-vulkan AND EXISTS "/usr/include/vulkan/vulkan.hpp")
+    target_include_directories(ggml-vulkan SYSTEM PRIVATE /usr/include)
+endif()
 
 add_library(lfm_native SHARED native-lib.cpp)
 

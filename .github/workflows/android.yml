@@ -31,12 +31,24 @@ jobs:
           yes | sdkmanager --licenses >/dev/null || true
           sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;27.2.12479018" "cmake;3.31.6"
 
-      - name: Install Vulkan shader compiler
+      - name: Install Vulkan build dependencies
+        shell: bash
         run: |
+          set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y glslc spirv-headers
-          command -v glslc
-          glslc --version
+          sudo apt-get install -y libvulkan-dev glslc spirv-headers ninja-build
+
+          echo "Host Vulkan headers:"
+          test -f /usr/include/vulkan/vulkan.h
+          test -f /usr/include/vulkan/vulkan.hpp
+          test -f /usr/share/cmake/SPIRV-Headers/SPIRV-HeadersConfig.cmake
+          echo "Host Vulkan/SPIR-V dependencies verified"
+
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+          NDK="$SDK_ROOT/ndk/27.2.12479018"
+          test -f "$NDK/shader-tools/linux-x86_64/glslc"
+          test -f "$NDK/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/26/libvulkan.so"
+          echo "Android NDK Vulkan dependencies verified"
 
       - name: Locate Android Build Tools
         shell: bash
@@ -68,7 +80,7 @@ jobs:
 
       - name: Build release APK
         run: |
-          gradle --no-daemon clean assembleRelease
+          gradle --no-daemon clean assembleRelease --stacktrace
 
       - name: Verify APK signature
         shell: bash

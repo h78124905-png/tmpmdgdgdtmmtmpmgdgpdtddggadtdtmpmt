@@ -16,7 +16,16 @@ set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
 set(GGML_LLAMAFILE OFF CACHE BOOL "" FORCE)
 set(GGML_NATIVE OFF CACHE BOOL "" FORCE)
 
-# Pin the upstream revision used by the Android host.  Use a full clone so
+# Optimize specifically for the ARM64 Android target used by this app.
+# llama.cpp's Android guide recommends armv8.7a for performant modern devices.
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -march=armv8.7a" CACHE STRING "" FORCE)
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=armv8.7a" CACHE STRING "" FORCE)
+
+# Enable link-time optimization so the final native library can be optimized
+# across llama.cpp translation units as well as this app's JNI layer.
+set(GGML_LTO ON CACHE BOOL "" FORCE)
+
+# Pin the upstream revision used by the Android host. Use a full clone so
 # CMake/Git can reliably check out an exact commit instead of depending on
 # GitHub's shallow-clone handling of a raw SHA.
 FetchContent_Declare(

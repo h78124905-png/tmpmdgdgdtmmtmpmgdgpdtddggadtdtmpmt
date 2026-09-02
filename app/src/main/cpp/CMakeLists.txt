@@ -23,25 +23,17 @@ set(GGML_VULKAN_RUN_TESTS OFF CACHE BOOL "" FORCE)
 set(GGML_LTO ON CACHE BOOL "" FORCE)
 
 if (ANDROID)
-    # The Android NDK toolchain deliberately separates the target sysroot from
-    # host packages. Vulkan-Hpp is a host-side header needed to compile the
-    # cross-target ggml-vulkan backend, while libvulkan.so is the Android target
-    # library supplied by the NDK.
     set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE BOTH CACHE STRING "" FORCE)
     set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE BOTH CACHE STRING "" FORCE)
     set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER CACHE STRING "" FORCE)
 
     if (EXISTS "/usr/include/vulkan/vulkan.hpp")
-        include_directories(SYSTEM "/usr/include")
         set(Vulkan_INCLUDE_DIR "/usr/include" CACHE PATH "Vulkan headers" FORCE)
         set(Vulkan_INCLUDE_DIRS "/usr/include" CACHE STRING "Vulkan header directories" FORCE)
     else()
         message(FATAL_ERROR "Host Vulkan-Hpp header not found: /usr/include/vulkan/vulkan.hpp")
     endif()
 
-    # CMAKE_ANDROID_NDK is set by the Android Gradle/CMake toolchain and is
-    # available during configure. Do not use ANDROID_NDK here: it is not
-    # guaranteed to be defined inside Gradle's CMake invocation.
     set(_android_ndk "${CMAKE_ANDROID_NDK}")
     if (NOT _android_ndk)
         message(FATAL_ERROR "CMAKE_ANDROID_NDK is not set")
@@ -77,6 +69,13 @@ FetchContent_Declare(
     GIT_SHALLOW FALSE
 )
 FetchContent_MakeAvailable(llama_cpp)
+
+# The Vulkan backend is created inside llama.cpp's FetchContent tree. Add the
+# host Vulkan-Hpp include path directly to the backend target so Android clang
+# receives it in the actual ggml-vulkan compile command.
+if (ANDROID AND TARGET ggml-vulkan)
+    target_include_directories(ggml-vulkan PRIVATE SYSTEM "/usr/include")
+endif()
 
 add_library(lfm_native SHARED native-lib.cpp)
 

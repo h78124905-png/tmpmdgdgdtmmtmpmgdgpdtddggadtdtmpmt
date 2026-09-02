@@ -34,7 +34,9 @@ private data class Message(
 private data class ModelSlot(val uri: String = "", val name: String = "")
 
 private class ThinkStreamParser {
-    private var thinking = false
+    // LFM2.5 may emit the reasoning body followed only by </think>, because
+    // the opening tag can already be supplied by the chat template.
+    private var thinking = true
     private var pending = ""
 
     data class Emission(val thinking: String = "", val answer: String = "")

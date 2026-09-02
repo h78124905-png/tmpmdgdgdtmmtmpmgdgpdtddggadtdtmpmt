@@ -23,10 +23,8 @@ set(GGML_VULKAN_DEBUG OFF CACHE BOOL "" FORCE)
 set(GGML_LTO ON CACHE BOOL "" FORCE)
 
 # CMake's FindVulkan must be pointed at the Android NDK's Vulkan loader and
-# headers.  Without these hints it can discover the Linux host Vulkan SDK
-# installed on the GitHub runner, which is the wrong architecture for the
-# arm64-v8a Android target.  The NDK also ships the host glslc used to compile
-# Vulkan shaders during the cross-build.
+# headers. Without these hints it can discover the Linux host Vulkan SDK,
+# which is the wrong architecture for the arm64-v8a Android target.
 if (ANDROID AND CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux")
     set(_android_ndk "${ANDROID_NDK}")
     if (NOT _android_ndk)
@@ -44,9 +42,16 @@ if (ANDROID AND CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux")
             "${_android_ndk}/shader-tools/linux-x86_64/glslc"
             CACHE FILEPATH "Android NDK host glslc" FORCE)
     endif()
+
+    # Ubuntu's spirv-headers package installs its CMake package below
+    # /usr/share/cmake rather than a default CMAKE_PREFIX_PATH entry.
+    if (EXISTS "/usr/share/cmake/SPIRV-Headers/SPIRV-HeadersConfig.cmake")
+        set(SPIRV-Headers_DIR "/usr/share/cmake/SPIRV-Headers"
+            CACHE PATH "SPIRV-Headers CMake package" FORCE)
+    endif()
 endif()
 
-# Pin the upstream revision used by the Android host.  Use a full clone so
+# Pin the upstream revision used by the Android host. Use a full clone so
 # CMake/Git can reliably check out an exact commit instead of depending on
 # GitHub's shallow-clone handling of a raw SHA.
 FetchContent_Declare(

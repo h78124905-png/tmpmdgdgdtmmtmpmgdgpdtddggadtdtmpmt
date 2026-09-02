@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <exception>
 #include <string>
+#include <vector>
 
 #include "llama.h"
 #include "common.h"
@@ -68,8 +69,16 @@ Java_com_example_lfmmobile_LlamaEngine_nativeLoadModelFromPath(
         params.n_parallel = 1;
 
         auto init = common_init_from_params(params);
-        if (!init || !init->model() || !init->context()) {
-            set_error("stage=model_or_context_init; llama.cpp could not initialize the selected GGUF");
+        if (!init) {
+            set_error("stage=model_init; common_init_from_params returned no result");
+            return JNI_FALSE;
+        }
+        if (!init->model()) {
+            set_error("stage=model_init; llama.cpp could not load the selected GGUF");
+            return JNI_FALSE;
+        }
+        if (!init->context()) {
+            set_error("stage=context_init; GGUF loaded but llama.cpp could not create the context");
             return JNI_FALSE;
         }
 
@@ -129,10 +138,12 @@ Java_com_example_lfmmobile_LlamaEngine_nativeGenerate(
     if (input.size() + 1 >= n_ctx)
         return env->NewStringUTF("[prompt exceeds context]");
 
-    llama_batch batch = llama_batch_init(
-        std::min<uint32_t>(llama_n_batch(g_engine.context), input.size()), 0, 1);
-    for (size_t i = 0; i < input.size(); ++i)
-        common_batch_add(batch, input[i], static_cast<llama_pos>(i), {0}, true);
+    const uint32_t batch_size = std::min<uint32_t>(llama_n_batch(g_engine.context), input.size());
+    llama_batch batch = llama_batch_init(batch_size, 0, 1);
+    for (size_t i = 0; i < input.size(); ++i) {
+        const bool want_logits = (i + 1 == input.size());
+        common_batch_add(batch, input[i], static_cast<llama_pos>(i), {0}, want_logits);
+    }
 
     if (llama_decode(g_engine.context, batch) != 0) {
         llama_batch_free(batch);

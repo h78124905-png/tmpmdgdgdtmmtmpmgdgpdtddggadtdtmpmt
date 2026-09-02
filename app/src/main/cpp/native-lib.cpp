@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <exception>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "llama.h"
@@ -88,11 +89,8 @@ Java_com_example_lfmmobile_LlamaEngine_nativeLoadModelFromPath(
     }
 
     try {
-        // Load the GGUF directly through the public llama.cpp API.  This deliberately
-        // avoids common_init_from_params so model loading and context creation can be
-        // diagnosed independently on Android.
         llama_model_params model_params = llama_model_default_params();
-        model_params.n_gpu_layers = 0; // force CPU on Android; do not probe unavailable GPU backends
+        model_params.n_gpu_layers = 0;
         model_params.progress_callback = load_progress;
         model_params.progress_callback_user_data = nullptr;
 

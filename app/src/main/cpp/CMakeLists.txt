@@ -23,33 +23,34 @@ set(GGML_VULKAN_DEBUG OFF CACHE BOOL "" FORCE)
 set(GGML_VULKAN_RUN_TESTS OFF CACHE BOOL "" FORCE)
 set(GGML_LTO ON CACHE BOOL "" FORCE)
 
-# Android's NDK supplies the Vulkan loader library, while the host Linux
-# packages supply the C++ Vulkan header (vulkan.hpp) and SPIR-V headers used
-# by llama.cpp's Vulkan backend. Keeping these roles separate avoids trying
-# to link the Android build against a Linux Vulkan library.
-if (ANDROID AND CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux")
+# llama.cpp's Vulkan backend includes vulkan/vulkan.hpp. The Android NDK
+# provides libvulkan.so but does not provide the C++ Vulkan-Hpp headers.
+# Use the host Khronos headers for compilation and the Android NDK loader for
+# linking. The include path must be global because ggml-vulkan is created
+# inside FetchContent and its target is not guaranteed to exist yet.
+if (ANDROID)
+    if (EXISTS "/usr/include/vulkan/vulkan.hpp")
+        include_directories(SYSTEM "/usr/include")
+        set(Vulkan_INCLUDE_DIR "/usr/include" CACHE PATH "Vulkan headers" FORCE)
+    endif()
+
     set(_android_ndk "${ANDROID_NDK}")
     if (NOT _android_ndk)
         set(_android_ndk "${CMAKE_ANDROID_NDK}")
+    endif()
+
+    if (_android_ndk AND EXISTS "${_android_ndk}/shader-tools/linux-x86_64/glslc")
+        set(Vulkan_GLSLC_EXECUTABLE
+            "${_android_ndk}/shader-tools/linux-x86_64/glslc"
+            CACHE FILEPATH "Android host glslc" FORCE)
     endif()
 
     if (_android_ndk)
         set(Vulkan_LIBRARY
             "${_android_ndk}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/26/libvulkan.so"
             CACHE FILEPATH "Android NDK Vulkan loader" FORCE)
-        set(Vulkan_GLSLC_EXECUTABLE
-            "${_android_ndk}/shader-tools/linux-x86_64/glslc"
-            CACHE FILEPATH "Android NDK host glslc" FORCE)
     endif()
 
-    # ggml-vulkan needs vulkan/vulkan.hpp, which is not provided by the NDK
-    # sysroot. libvulkan-dev installs it under /usr/include/vulkan.
-    if (EXISTS "/usr/include/vulkan/vulkan.hpp")
-        set(Vulkan_INCLUDE_DIR "/usr/include" CACHE PATH "Host Vulkan headers" FORCE)
-    endif()
-
-    # Ubuntu's spirv-headers package installs its CMake package below
-    # /usr/share/cmake rather than a default CMAKE_PREFIX_PATH entry.
     if (EXISTS "/usr/share/cmake/SPIRV-Headers/SPIRV-HeadersConfig.cmake")
         set(SPIRV-Headers_DIR "/usr/share/cmake/SPIRV-Headers"
             CACHE PATH "SPIRV-Headers CMake package" FORCE)
@@ -63,12 +64,6 @@ FetchContent_Declare(
     GIT_SHALLOW FALSE
 )
 FetchContent_MakeAvailable(llama_cpp)
-
-# The Vulkan backend is compiled as part of ggml. Add the host Vulkan include
-# directory explicitly as a final safeguard for vulkan.hpp when cross-building.
-if (ANDROID AND TARGET ggml-vulkan AND EXISTS "/usr/include/vulkan/vulkan.hpp")
-    target_include_directories(ggml-vulkan SYSTEM PRIVATE /usr/include)
-endif()
 
 add_library(lfm_native SHARED native-lib.cpp)
 

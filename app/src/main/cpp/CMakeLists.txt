@@ -23,33 +23,50 @@ set(GGML_VULKAN_RUN_TESTS OFF CACHE BOOL "" FORCE)
 set(GGML_LTO ON CACHE BOOL "" FORCE)
 
 if (ANDROID)
+    # The Android NDK toolchain deliberately separates the target sysroot from
+    # host packages. Vulkan-Hpp is a host-side header needed to compile the
+    # cross-target ggml-vulkan backend, while libvulkan.so is the Android target
+    # library supplied by the NDK.
     set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE BOTH CACHE STRING "" FORCE)
     set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE BOTH CACHE STRING "" FORCE)
     set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER CACHE STRING "" FORCE)
 
     if (EXISTS "/usr/include/vulkan/vulkan.hpp")
         include_directories(SYSTEM "/usr/include")
-        set(Vulkan_INCLUDE_DIR "/usr/include" CACHE PATH "" FORCE)
-        set(Vulkan_INCLUDE_DIRS "/usr/include" CACHE STRING "" FORCE)
+        set(Vulkan_INCLUDE_DIR "/usr/include" CACHE PATH "Vulkan headers" FORCE)
+        set(Vulkan_INCLUDE_DIRS "/usr/include" CACHE STRING "Vulkan header directories" FORCE)
+    else()
+        message(FATAL_ERROR "Host Vulkan-Hpp header not found: /usr/include/vulkan/vulkan.hpp")
     endif()
 
-    set(_android_ndk "\${ANDROID_NDK}")
+    # CMAKE_ANDROID_NDK is set by the Android Gradle/CMake toolchain and is
+    # available during configure. Do not use ANDROID_NDK here: it is not
+    # guaranteed to be defined inside Gradle's CMake invocation.
+    set(_android_ndk "${CMAKE_ANDROID_NDK}")
     if (NOT _android_ndk)
-        set(_android_ndk "\${CMAKE_ANDROID_NDK}")
+        message(FATAL_ERROR "CMAKE_ANDROID_NDK is not set")
     endif()
 
-    if (_android_ndk)
-        set(Vulkan_LIBRARY
-            "\${_android_ndk}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/26/libvulkan.so"
-            CACHE FILEPATH "" FORCE)
-        set(Vulkan_GLSLC_EXECUTABLE
-            "\${_android_ndk}/shader-tools/linux-x86_64/glslc"
-            CACHE FILEPATH "" FORCE)
+    set(_android_vulkan_library
+        "${_android_ndk}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/26/libvulkan.so")
+    set(_android_glslc
+        "${_android_ndk}/shader-tools/linux-x86_64/glslc")
+
+    if (NOT EXISTS "${_android_vulkan_library}")
+        message(FATAL_ERROR "Android NDK Vulkan library not found: ${_android_vulkan_library}")
     endif()
+    if (NOT EXISTS "${_android_glslc}")
+        message(FATAL_ERROR "Android NDK glslc not found: ${_android_glslc}")
+    endif()
+
+    set(Vulkan_LIBRARY "${_android_vulkan_library}" CACHE FILEPATH "Android NDK Vulkan loader" FORCE)
+    set(Vulkan_GLSLC_EXECUTABLE "${_android_glslc}" CACHE FILEPATH "Android host glslc" FORCE)
 
     if (EXISTS "/usr/share/cmake/SPIRV-Headers/SPIRV-HeadersConfig.cmake")
         set(SPIRV-Headers_DIR "/usr/share/cmake/SPIRV-Headers"
-            CACHE PATH "" FORCE)
+            CACHE PATH "SPIRV-Headers CMake package" FORCE)
+    else()
+        message(FATAL_ERROR "SPIRV-Headers CMake package not found")
     endif()
 endif()
 
@@ -67,8 +84,8 @@ target_compile_features(lfm_native PRIVATE cxx_std_17)
 target_compile_options(lfm_native PRIVATE -O3 -fvisibility=hidden)
 
 target_include_directories(lfm_native PRIVATE
-    \${llama_cpp_SOURCE_DIR}/include
-    \${llama_cpp_SOURCE_DIR}/common
+    ${llama_cpp_SOURCE_DIR}/include
+    ${llama_cpp_SOURCE_DIR}/common
 )
 
 target_link_libraries(lfm_native PRIVATE

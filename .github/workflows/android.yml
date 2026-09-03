@@ -36,13 +36,17 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y libvulkan-dev glslc spirv-headers ninja-build
+          sudo apt-get install -y glslc spirv-headers ninja-build
 
-          echo "Host Vulkan headers:"
-          test -f /usr/include/vulkan/vulkan.h
-          test -f /usr/include/vulkan/vulkan.hpp
+          # Vulkan-Headers is deliberately kept in the workspace. Android clang
+          # uses the NDK sysroot and does not reliably expose Ubuntu's /usr/include
+          # during the ggml-vulkan cross compile.
+          git clone --depth 1 https://github.com/KhronosGroup/Vulkan-Headers.git "$GITHUB_WORKSPACE/Vulkan-Headers"
+
+          test -f "$GITHUB_WORKSPACE/Vulkan-Headers/include/vulkan/vulkan.h"
+          test -f "$GITHUB_WORKSPACE/Vulkan-Headers/include/vulkan/vulkan.hpp"
           test -f /usr/share/cmake/SPIRV-Headers/SPIRV-HeadersConfig.cmake
-          echo "Host Vulkan/SPIR-V dependencies verified"
+          echo "Workspace Vulkan-Headers and SPIR-V dependencies verified"
 
           SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
           NDK="$SDK_ROOT/ndk/27.2.12479018"

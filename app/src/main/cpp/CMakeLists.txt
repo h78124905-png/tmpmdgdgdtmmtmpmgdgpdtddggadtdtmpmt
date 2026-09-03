@@ -27,9 +27,7 @@ if (ANDROID)
     set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE BOTH CACHE STRING "" FORCE)
     set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER CACHE STRING "" FORCE)
 
-    # The Android cross compiler searches the NDK sysroot, not the host's
-    # /usr/include. The workflow checks out Vulkan-Headers into the repository,
-    # so the header path is deterministic and independent of the host image.
+    # Vulkan-Hpp comes from the Khronos Vulkan-Headers checkout in the workflow.
     get_filename_component(_repo_root "${CMAKE_CURRENT_SOURCE_DIR}/../../../.." ABSOLUTE)
     set(_vulkan_headers "${_repo_root}/Vulkan-Headers/include")
     if (NOT EXISTS "${_vulkan_headers}/vulkan/vulkan.hpp")
@@ -40,6 +38,9 @@ if (ANDROID)
     endif()
     if (NOT EXISTS "/usr/share/cmake/SPIRV-Headers/SPIRV-HeadersConfig.cmake")
         message(FATAL_ERROR "SPIRV-Headers CMake package not found")
+    endif()
+    if (NOT EXISTS "/usr/include/spirv/unified1/spirv.hpp")
+        message(FATAL_ERROR "SPIR-V C++ header not found: /usr/include/spirv/unified1/spirv.hpp")
     endif()
 
     set(Vulkan_INCLUDE_DIR "${_vulkan_headers}" CACHE PATH "Vulkan headers" FORCE)
@@ -75,11 +76,14 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(llama_cpp)
 
-# ggml-vulkan is created inside llama.cpp's FetchContent tree. Add the
-# workspace Vulkan-Headers directly to the actual backend target so the
-# Android clang command contains the include path that ggml-vulkan needs.
+# Android clang does not automatically search the host /usr/include.
+# ggml-vulkan includes SPIR-V-Headers as <spirv/unified1/spirv.hpp>, so add
+# the host package include root directly to the actual backend target.
 if (ANDROID AND TARGET ggml-vulkan)
-    target_include_directories(ggml-vulkan SYSTEM PRIVATE "${_vulkan_headers}")
+    target_include_directories(ggml-vulkan SYSTEM PRIVATE
+        "${_vulkan_headers}"
+        "/usr/include"
+    )
 endif()
 
 add_library(lfm_native SHARED native-lib.cpp)

@@ -1,5 +1,6 @@
 package com.example.lfmmobile
 
+import android.content.Context
 import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -23,7 +24,10 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.File
+import java.util.UUID
 
 private data class Message(
     val user: Boolean,
@@ -32,10 +36,20 @@ private data class Message(
     val sources: List<SearchResult> = emptyList()
 )
 private data class ModelSlot(val uri: String = "", val name: String = "")
+private data class Conversation(val id: String, val title: String, val messages: List<Message>)
+private data class GenerationStats(
+    val tokPerSec: Double = 0.0,
+    val elapsedMs: Long = 0L,
+    val gpu: String = "CPU",
+    val contextUsed: Int = 0,
+    val contextSize: Int = 0
+)
+private sealed interface StreamEvent {
+    data class Token(val text: String) : StreamEvent
+    data class Stats(val value: GenerationStats) : StreamEvent
+}
 
 private class ThinkStreamParser {
-    // LFM2.5 may emit the reasoning body followed only by </think>, because
-    // the opening tag can already be supplied by the chat template.
     private var thinking = true
     private var pending = ""
 
@@ -45,7 +59,6 @@ private class ThinkStreamParser {
         pending += chunk
         var thinkingOut = ""
         var answerOut = ""
-
         while (pending.isNotEmpty()) {
             val marker = if (thinking) "</think>" else "<think>"
             val index = pending.indexOf(marker)
@@ -56,7 +69,6 @@ private class ThinkStreamParser {
                 thinking = !thinking
                 continue
             }
-
             var keep = 0
             for (length in 1 until marker.length) {
                 if (pending.endsWith(marker.substring(0, length))) keep = length
@@ -81,6 +93,51 @@ private class ThinkStreamParser {
     }
 }
 
+private fun loadConversations(context: Context): List<Conversation> {
+    return try {
+        val raw = context.getSharedPreferences("chat_history", Context.MODE_PRIVATE)
+            .getString("conversations", "[]") ?: "[]"
+        val array = JSONArray(raw)
+        buildList {
+            for (i in 0 until array.length()) {
+                val obj = array.getJSONObject(i)
+                val messagesJson = obj.optJSONArray("messages") ?: JSONArray()
+                val messages = buildList {
+                    for (j in 0 until messagesJson.length()) {
+                        val m = messagesJson.getJSONObject(j)
+                        add(Message(
+                            user = m.optBoolean("user"),
+                            text = m.optString("text"),
+                            thinking = m.optString("thinking")
+                        ))
+                    }
+                }
+                add(Conversation(obj.optString("id"), obj.optString("title"), messages))
+            }
+        }
+    } catch (_: Exception) {
+        emptyList()
+    }
+}
+
+private fun saveConversations(context: Context, conversations: List<Conversation>) {
+    val array = JSONArray()
+    conversations.forEach { conversation ->
+        val obj = JSONObject().put("id", conversation.id).put("title", conversation.title)
+        val messages = JSONArray()
+        conversation.messages.forEach { message ->
+            messages.put(JSONObject()
+                .put("user", message.user)
+                .put("text", message.text)
+                .put("thinking", message.thinking))
+        }
+        obj.put("messages", messages)
+        array.put(obj)
+    }
+    context.getSharedPreferences("chat_history", Context.MODE_PRIVATE)
+        .edit().putString("conversations", array.toString()).apply()
+}
+
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -102,8 +159,12 @@ private fun ChatApp() {
     val search = remember { SearchService() }
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
+    val drawerState = rememberDrawerState(DrawerValue.Closed)
     var target by remember { mutableStateOf(ModelSlot()) }
+    var draft by remember { mutableStateOf(ModelSlot()) }
     var messages by remember { mutableStateOf(listOf<Message>()) }
+    var conversations by remember { mutableStateOf(loadConversations(activity)) }
+    var currentChatId by remember { mutableStateOf(UUID.randomUUID().toString()) }
     var prompt by remember { mutableStateOf("") }
     var generating by remember { mutableStateOf(false) }
     var searching by remember { mutableStateOf(false) }
@@ -113,25 +174,52 @@ private fun ChatApp() {
     var webMode by remember { mutableStateOf(true) }
     var loaded by remember { mutableStateOf(false) }
     var loadError by remember { mutableStateOf("") }
+    var generationStats by remember { mutableStateOf(GenerationStats()) }
 
-    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+    val pickerTarget = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         uri ?: return@rememberLauncherForActivityResult
         val name = activity.displayName(uri) ?: uri.lastPathSegment?.substringAfterLast('/') ?: "model.gguf"
         target = ModelSlot(uri.toString(), name)
         loaded = false
         loadError = ""
     }
-
-    DisposableEffect(Unit) {
-        onDispose { engine.close() }
+    val pickerDraft = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+        uri ?: return@rememberLauncherForActivityResult
+        val name = activity.displayName(uri) ?: uri.lastPathSegment?.substringAfterLast('/') ?: "dspark.gguf"
+        draft = ModelSlot(uri.toString(), name)
+        loaded = false
+        loadError = ""
     }
+
+    DisposableEffect(Unit) { onDispose { engine.close() } }
 
     LaunchedEffect(messages.size, generating, searching) {
         if (messages.isNotEmpty()) listState.animateScrollToItem(messages.lastIndex)
     }
 
-    fun chooseTarget() {
-        picker.launch(arrayOf("application/octet-stream", "application/x-gguf", "*/*"))
+    fun saveCurrentChat() {
+        if (messages.isEmpty()) return
+        val firstUser = messages.firstOrNull { it.user }?.text.orEmpty().trim()
+        val title = firstUser.ifBlank { "New chat" }.replace("\n", " ").take(42)
+        val item = Conversation(currentChatId, title, messages)
+        conversations = listOf(item) + conversations.filterNot { it.id == currentChatId }
+        saveConversations(activity, conversations)
+    }
+
+    fun newChat() {
+        saveCurrentChat()
+        currentChatId = UUID.randomUUID().toString()
+        messages = emptyList()
+        generationStats = GenerationStats()
+        scope.launch { drawerState.close() }
+    }
+
+    fun openConversation(conversation: Conversation) {
+        saveCurrentChat()
+        currentChatId = conversation.id
+        messages = conversation.messages
+        generationStats = GenerationStats()
+        scope.launch { drawerState.close() }
     }
 
     fun loadModel() {
@@ -141,37 +229,31 @@ private fun ChatApp() {
             loadError = "Copying model to app storage…"
             val result = withContext(Dispatchers.IO) {
                 try {
-                    val uri = Uri.parse(target.uri)
-                    val sourceName = target.name.ifBlank { "model.gguf" }
-                    val safeName = sourceName.replace(Regex("[^A-Za-z0-9._-]"), "_")
                     val modelDir = File(activity.filesDir, "models")
                     if (!modelDir.exists() && !modelDir.mkdirs()) {
                         return@withContext false to "stage=storage; could not create app model directory"
                     }
-                    val modelFile = File(modelDir, safeName)
-                    val tempFile = File(modelDir, "$safeName.part")
-                    val input = activity.contentResolver.openInputStream(uri)
-                        ?: return@withContext false to "stage=storage; could not open selected model"
-                    input.use { source ->
-                        tempFile.outputStream().use { destination ->
-                            source.copyTo(destination, 1024 * 1024)
-                            destination.fd.sync()
-                        }
+                    fun copyModel(slot: ModelSlot, fallback: String): File {
+                        val sourceName = slot.name.ifBlank { fallback }
+                        val safeName = sourceName.replace(Regex("[^A-Za-z0-9._-]"), "_")
+                        val modelFile = File(modelDir, safeName)
+                        val tempFile = File(modelDir, "$safeName.part")
+                        val input = activity.contentResolver.openInputStream(Uri.parse(slot.uri))
+                            ?: throw IllegalStateException("could not open selected model")
+                        input.use { source -> tempFile.outputStream().use { destination -> source.copyTo(destination, 1024 * 1024); destination.fd.sync() } }
+                        if (!tempFile.isFile || tempFile.length() == 0L) { tempFile.delete(); throw IllegalStateException("copied model is empty") }
+                        if (modelFile.exists()) modelFile.delete()
+                        if (!tempFile.renameTo(modelFile)) { tempFile.delete(); throw IllegalStateException("could not finalize model file") }
+                        return modelFile
                     }
-                    if (!tempFile.isFile || tempFile.length() == 0L) {
-                        tempFile.delete()
-                        return@withContext false to "stage=storage; copied model is empty"
+                    val targetFile = copyModel(target, "model.gguf")
+                    val draftFile = if (draft.uri.isNotEmpty()) copyModel(draft, "dspark.gguf") else null
+                    loadError = if (draftFile != null) "Loading Target + DSpark…" else "Loading GGUF…"
+                    val ok = if (draftFile != null) {
+                        engine.loadModelFromPath(targetFile.absolutePath, draftFile.absolutePath, contextSize)
+                    } else {
+                        engine.loadModelFromPath(targetFile.absolutePath, contextSize)
                     }
-                    if (modelFile.exists() && !modelFile.delete()) {
-                        tempFile.delete()
-                        return@withContext false to "stage=storage; could not replace existing model"
-                    }
-                    if (!tempFile.renameTo(modelFile)) {
-                        tempFile.delete()
-                        return@withContext false to "stage=storage; could not finalize model file"
-                    }
-                    loadError = "Loading GGUF…"
-                    val ok = engine.loadModelFromPath(modelFile.absolutePath, contextSize)
                     ok to if (ok) "" else engine.lastError()
                 } catch (e: Exception) {
                     false to "stage=storage; ${e.message ?: "could not copy/load model"}"
@@ -187,6 +269,7 @@ private fun ChatApp() {
         if (text.isEmpty() || generating || searching || !loaded) return
         prompt = ""
         messages = messages + Message(true, text) + Message(false, "")
+        generationStats = GenerationStats(contextSize = contextSize)
         generating = true
         scope.launch {
             var sourceResults = emptyList<SearchResult>()
@@ -212,25 +295,35 @@ private fun ChatApp() {
                     append("User: ").append(text).append("\nAssistant:")
                 }
 
-                val channel = Channel<String>(Channel.UNLIMITED)
+                val channel = Channel<StreamEvent>(Channel.UNLIMITED)
                 val generation = async(Dispatchers.Default) {
                     try {
-                        engine.generateStream(conversation, maxTokens) { token -> channel.trySend(token) }
-                    } finally {
-                        channel.close()
-                    }
+                        engine.generateStream(
+                            conversation,
+                            maxTokens,
+                            onToken = { token -> channel.trySend(StreamEvent.Token(token)) },
+                            onStats = { tokPerSec, elapsedMs, gpu, contextUsed, contextMax ->
+                                channel.trySend(StreamEvent.Stats(GenerationStats(tokPerSec, elapsedMs, gpu, contextUsed, contextMax)))
+                            }
+                        )
+                    } finally { channel.close() }
                 }
 
                 val parser = ThinkStreamParser()
-                for (token in channel) {
-                    val emission = parser.consume(token)
-                    if (emission.thinking.isNotEmpty() || emission.answer.isNotEmpty()) {
-                        val current = messages.lastOrNull() ?: Message(false, "")
-                        messages = messages.dropLast(1) + current.copy(
-                            text = current.text + emission.answer,
-                            thinking = current.thinking + emission.thinking,
-                            sources = sourceResults
-                        )
+                for (event in channel) {
+                    when (event) {
+                        is StreamEvent.Token -> {
+                            val emission = parser.consume(event.text)
+                            if (emission.thinking.isNotEmpty() || emission.answer.isNotEmpty()) {
+                                val current = messages.lastOrNull() ?: Message(false, "")
+                                messages = messages.dropLast(1) + current.copy(
+                                    text = current.text + emission.answer,
+                                    thinking = current.thinking + emission.thinking,
+                                    sources = sourceResults
+                                )
+                            }
+                        }
+                        is StreamEvent.Stats -> generationStats = event.value
                     }
                 }
 
@@ -251,6 +344,7 @@ private fun ChatApp() {
                         sources = sourceResults
                     )
                 }
+                saveCurrentChat()
             } finally {
                 searching = false
                 generating = false
@@ -259,41 +353,65 @@ private fun ChatApp() {
     }
 
     MaterialTheme(colorScheme = darkColorScheme()) {
-        Surface(Modifier.fillMaxSize()) {
-            Scaffold(topBar = {
-                TopAppBar(
-                    title = { Text("Lfm Mobile", fontWeight = FontWeight.SemiBold) },
-                    actions = {
-                        TextButton({ messages = emptyList() }) { Text("New") }
-                        TextButton({ showModels = true }) { Text("Models") }
-                    }
-                )
-            }) { padding ->
-                Column(Modifier.fillMaxSize().padding(padding)) {
-                    Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                        FilterChip(selected = webMode, onClick = { webMode = !webMode }, label = { Text(if (webMode) "Web search: Auto" else "Web search: Off") })
+        ModalNavigationDrawer(
+            drawerState = drawerState,
+            drawerContent = {
+                ModalDrawerSheet {
+                    Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text("トーク", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
                         Spacer(Modifier.weight(1f))
-                        Text(if (loaded) "Ready" else "Model not loaded", style = MaterialTheme.typography.bodySmall)
+                        TextButton({ newChat() }) { Text("新しいチャット") }
                     }
-                    LazyColumn(
-                        state = listState,
-                        modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 14.dp),
-                        verticalArrangement = Arrangement.spacedBy(14.dp),
-                        contentPadding = PaddingValues(vertical = 18.dp)
-                    ) {
-                        if (messages.isEmpty()) item { Welcome(target, loaded) }
-                        items(messages) { MessageBubble(it) }
-                        if (searching) item { Text("Searching the web…", Modifier.padding(start = 12.dp)) }
-                        if (generating) item { Text("Generating…", Modifier.padding(start = 12.dp)) }
+                    HorizontalDivider()
+                    if (conversations.isEmpty()) {
+                        Text("まだトークはありません", Modifier.padding(20.dp), style = MaterialTheme.typography.bodyMedium)
+                    } else {
+                        conversations.forEach { conversation ->
+                            NavigationDrawerItem(
+                                label = { Text(conversation.title, maxLines = 2) },
+                                selected = conversation.id == currentChatId,
+                                onClick = { openConversation(conversation) },
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 2.dp)
+                            )
+                        }
                     }
-                    Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.Bottom) {
-                        OutlinedTextField(
-                            value = prompt, onValueChange = { prompt = it }, modifier = Modifier.weight(1f),
-                            placeholder = { Text("Message") }, enabled = !generating && !searching && loaded,
-                            shape = RoundedCornerShape(24.dp), maxLines = 6
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Button(onClick = { send() }, enabled = prompt.isNotBlank() && !generating && !searching && loaded) { Text("Send") }
+                }
+            }
+        ) {
+            Surface(Modifier.fillMaxSize()) {
+                Scaffold(topBar = {
+                    TopAppBar(
+                        navigationIcon = { TextButton({ scope.launch { drawerState.open() } }) { Text("トーク") } },
+                        title = { Text("Lfm Mobile", fontWeight = FontWeight.SemiBold) },
+                        actions = { TextButton({ showModels = true }) { Text("Models") } }
+                    )
+                }) { padding ->
+                    Column(Modifier.fillMaxSize().padding(padding)) {
+                        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                            FilterChip(selected = webMode, onClick = { webMode = !webMode }, label = { Text(if (webMode) "Web search: Auto" else "Web search: Off") })
+                            Spacer(Modifier.weight(1f))
+                            Text(if (loaded) "Ready" else "Model not loaded", style = MaterialTheme.typography.bodySmall)
+                        }
+                        LazyColumn(
+                            state = listState,
+                            modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 14.dp),
+                            verticalArrangement = Arrangement.spacedBy(14.dp),
+                            contentPadding = PaddingValues(vertical = 18.dp)
+                        ) {
+                            if (messages.isEmpty()) item { Welcome(target, draft, loaded) }
+                            items(messages) { MessageBubble(it) }
+                            if (searching) item { Text("Searching the web…", Modifier.padding(start = 12.dp)) }
+                            if (generating) item { GenerationStatus(generationStats) }
+                        }
+                        Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.Bottom) {
+                            OutlinedTextField(
+                                value = prompt, onValueChange = { prompt = it }, modifier = Modifier.weight(1f),
+                                placeholder = { Text("Message") }, enabled = !generating && !searching && loaded,
+                                shape = RoundedCornerShape(24.dp), maxLines = 6
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Button(onClick = { send() }, enabled = prompt.isNotBlank() && !generating && !searching && loaded) { Text("Send") }
+                        }
                     }
                 }
             }
@@ -305,12 +423,13 @@ private fun ChatApp() {
             onDismissRequest = { showModels = false }, title = { Text("Models") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    ModelCard("Target model", target) { chooseTarget() }
+                    ModelCard("Target model", target) { pickerTarget.launch(arrayOf("application/octet-stream", "application/x-gguf", "*/*")) }
+                    ModelCard("DSpark draft (optional)", draft) { pickerDraft.launch(arrayOf("application/octet-stream", "application/x-gguf", "*/*")) }
                     HorizontalDivider()
                     OutlinedTextField(contextSize.toString(), { it.toIntOrNull()?.coerceIn(512, 131072)?.let { v -> contextSize = v; loaded = false } }, label = { Text("Context size") }, singleLine = true)
                     OutlinedTextField(maxTokens.toString(), { it.toIntOrNull()?.coerceIn(1, 8192)?.let { v -> maxTokens = v } }, label = { Text("Max tokens") }, singleLine = true)
                     if (loadError.isNotBlank()) Text(loadError, color = MaterialTheme.colorScheme.error)
-                    Button(onClick = { loadModel() }, enabled = target.uri.isNotEmpty()) { Text(if (loaded) "Reload model" else "Load model") }
+                    Button(onClick = { loadModel() }, enabled = target.uri.isNotEmpty()) { Text(if (draft.uri.isNotEmpty()) "Load Target + DSpark" else "Load model") }
                     Text("Dark mode only • llama.cpp", style = MaterialTheme.typography.bodySmall)
                 }
             },
@@ -320,22 +439,44 @@ private fun ChatApp() {
 }
 
 @Composable
+private fun GenerationStatus(stats: GenerationStats) {
+    Surface(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
+    ) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("Generating…", fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.width(12.dp))
+            Text(String.format("%.1f tok/s", stats.tokPerSec))
+            Spacer(Modifier.width(10.dp))
+            Text(String.format("%.1fs", stats.elapsedMs / 1000.0))
+            Spacer(Modifier.width(10.dp))
+            Text(stats.gpu, maxLines = 1)
+            Spacer(Modifier.width(10.dp))
+            Text("ctx ${stats.contextUsed}/${stats.contextSize}")
+        }
+    }
+}
+
+@Composable
 private fun ModelCard(title: String, slot: ModelSlot, onPick: () -> Unit) {
     Card {
         Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
             Text(title, fontWeight = FontWeight.SemiBold)
             Text(if (slot.name.isEmpty()) "No model selected" else slot.name, maxLines = 2)
-            Text(if (slot.uri.isEmpty()) "Select a downloaded GGUF" else "Selected", style = MaterialTheme.typography.bodySmall)
+            Text(if (slot.uri.isEmpty()) "Select a GGUF from device storage" else "Selected", style = MaterialTheme.typography.bodySmall)
             OutlinedButton(onClick = onPick) { Text("Choose") }
         }
     }
 }
 
 @Composable
-private fun Welcome(target: ModelSlot, loaded: Boolean) {
+private fun Welcome(target: ModelSlot, draft: ModelSlot, loaded: Boolean) {
     Column(Modifier.fillMaxWidth().padding(top = 70.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Text("Local AI", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Medium)
         Text(if (loaded) target.name else "Choose a Target model in Models", style = MaterialTheme.typography.bodyMedium)
+        if (loaded && draft.uri.isNotEmpty()) Text("DSpark enabled", style = MaterialTheme.typography.bodySmall)
     }
 }
 

@@ -54,8 +54,9 @@ if (ANDROID)
         message(FATAL_ERROR "CMAKE_ANDROID_NDK is not set")
     endif()
 
+    # API 29 provides the Vulkan loader symbols required by ggml-vulkan.
     set(_android_vulkan_library
-        "${_android_ndk}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/26/libvulkan.so")
+        "${_android_ndk}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/29/libvulkan.so")
     set(_android_glslc
         "${_android_ndk}/shader-tools/linux-x86_64/glslc")
 

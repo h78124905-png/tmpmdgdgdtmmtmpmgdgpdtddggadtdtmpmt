@@ -27,12 +27,23 @@ if (ANDROID)
     set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE BOTH CACHE STRING "" FORCE)
     set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER CACHE STRING "" FORCE)
 
-    if (EXISTS "/usr/include/vulkan/vulkan.hpp")
-        set(Vulkan_INCLUDE_DIR "/usr/include" CACHE PATH "Vulkan headers" FORCE)
-        set(Vulkan_INCLUDE_DIRS "/usr/include" CACHE STRING "Vulkan header directories" FORCE)
-    else()
+    if (NOT EXISTS "/usr/include/vulkan/vulkan.hpp")
         message(FATAL_ERROR "Host Vulkan-Hpp header not found: /usr/include/vulkan/vulkan.hpp")
     endif()
+    if (NOT EXISTS "/usr/include/vulkan/vulkan.h")
+        message(FATAL_ERROR "Host Vulkan header not found: /usr/include/vulkan/vulkan.h")
+    endif()
+    if (NOT EXISTS "/usr/share/cmake/SPIRV-Headers/SPIRV-HeadersConfig.cmake")
+        message(FATAL_ERROR "SPIRV-Headers CMake package not found")
+    endif()
+
+    # Android clang uses the NDK sysroot and therefore does not automatically
+    # search Ubuntu's /usr/include. Pass the host Vulkan headers explicitly.
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -isystem /usr/include" CACHE STRING "" FORCE)
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -isystem /usr/include" CACHE STRING "" FORCE)
+    set(Vulkan_INCLUDE_DIR "/usr/include" CACHE PATH "Vulkan headers" FORCE)
+    set(Vulkan_INCLUDE_DIRS "/usr/include" CACHE STRING "Vulkan header directories" FORCE)
+    set(SPIRV-Headers_DIR "/usr/share/cmake/SPIRV-Headers" CACHE PATH "SPIRV-Headers CMake package" FORCE)
 
     set(_android_ndk "${CMAKE_ANDROID_NDK}")
     if (NOT _android_ndk)
@@ -53,13 +64,6 @@ if (ANDROID)
 
     set(Vulkan_LIBRARY "${_android_vulkan_library}" CACHE FILEPATH "Android NDK Vulkan loader" FORCE)
     set(Vulkan_GLSLC_EXECUTABLE "${_android_glslc}" CACHE FILEPATH "Android host glslc" FORCE)
-
-    if (EXISTS "/usr/share/cmake/SPIRV-Headers/SPIRV-HeadersConfig.cmake")
-        set(SPIRV-Headers_DIR "/usr/share/cmake/SPIRV-Headers"
-            CACHE PATH "SPIRV-Headers CMake package" FORCE)
-    else()
-        message(FATAL_ERROR "SPIRV-Headers CMake package not found")
-    endif()
 endif()
 
 FetchContent_Declare(
@@ -69,13 +73,6 @@ FetchContent_Declare(
     GIT_SHALLOW FALSE
 )
 FetchContent_MakeAvailable(llama_cpp)
-
-# The Vulkan backend is created inside llama.cpp's FetchContent tree. Add the
-# host Vulkan-Hpp include path directly to the backend target so Android clang
-# receives it in the actual ggml-vulkan compile command.
-if (ANDROID AND TARGET ggml-vulkan)
-    target_include_directories(ggml-vulkan PRIVATE SYSTEM "/usr/include")
-endif()
 
 add_library(lfm_native SHARED native-lib.cpp)
 

@@ -68,6 +68,11 @@ if (ANDROID)
 
     set(Vulkan_LIBRARY "${_android_vulkan_library}" CACHE FILEPATH "Android NDK Vulkan loader" FORCE)
     set(Vulkan_GLSLC_EXECUTABLE "${_android_glslc}" CACHE FILEPATH "Android host glslc" FORCE)
+
+    # Android clang does not search the host include tree. The Vulkan backend
+    # needs SPIR-V-Headers, so force the workspace copy into every C++ compile
+    # command as a compiler flag as a final cross-build safeguard.
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -isystem${_repo_root}" CACHE STRING "" FORCE)
 endif()
 
 FetchContent_Declare(
@@ -78,9 +83,9 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(llama_cpp)
 
-# Force the actual ggml-vulkan compile command to see both third-party header
-# trees. target_include_directories alone was not propagated by the Android
-# cross-build in the previous run, so use explicit compiler options as well.
+# Also attach the workspace header trees directly to ggml-vulkan. The global
+# CXX flag above handles Android's cross-compile path, while these target-level
+# settings document the dependency and cover generated backend targets.
 if (ANDROID AND TARGET ggml-vulkan)
     target_include_directories(ggml-vulkan SYSTEM PRIVATE
         "${_vulkan_headers}"

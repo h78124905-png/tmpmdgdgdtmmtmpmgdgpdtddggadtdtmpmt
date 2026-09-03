@@ -30,17 +30,19 @@ if (ANDROID)
     # Vulkan-Hpp comes from the Khronos Vulkan-Headers checkout in the workflow.
     get_filename_component(_repo_root "${CMAKE_CURRENT_SOURCE_DIR}/../../../.." ABSOLUTE)
     set(_vulkan_headers "${_repo_root}/Vulkan-Headers/include")
+    set(_spirv_headers "${_repo_root}/spirv")
+
     if (NOT EXISTS "${_vulkan_headers}/vulkan/vulkan.hpp")
         message(FATAL_ERROR "Workspace Vulkan-Headers not found: ${_vulkan_headers}/vulkan/vulkan.hpp")
     endif()
     if (NOT EXISTS "${_vulkan_headers}/vulkan/vulkan.h")
         message(FATAL_ERROR "Workspace Vulkan-Headers not found: ${_vulkan_headers}/vulkan/vulkan.h")
     endif()
+    if (NOT EXISTS "${_spirv_headers}/unified1/spirv.hpp")
+        message(FATAL_ERROR "Workspace SPIR-V C++ header not found: ${_spirv_headers}/unified1/spirv.hpp")
+    endif()
     if (NOT EXISTS "/usr/share/cmake/SPIRV-Headers/SPIRV-HeadersConfig.cmake")
         message(FATAL_ERROR "SPIRV-Headers CMake package not found")
-    endif()
-    if (NOT EXISTS "/usr/include/spirv/unified1/spirv.hpp")
-        message(FATAL_ERROR "SPIR-V C++ header not found: /usr/include/spirv/unified1/spirv.hpp")
     endif()
 
     set(Vulkan_INCLUDE_DIR "${_vulkan_headers}" CACHE PATH "Vulkan headers" FORCE)
@@ -76,13 +78,17 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(llama_cpp)
 
-# Android clang does not automatically search the host /usr/include.
-# ggml-vulkan includes SPIR-V-Headers as <spirv/unified1/spirv.hpp>, so add
-# the host package include root directly to the actual backend target.
+# Force the actual ggml-vulkan compile command to see both third-party header
+# trees. target_include_directories alone was not propagated by the Android
+# cross-build in the previous run, so use explicit compiler options as well.
 if (ANDROID AND TARGET ggml-vulkan)
     target_include_directories(ggml-vulkan SYSTEM PRIVATE
         "${_vulkan_headers}"
-        "/usr/include"
+        "${_repo_root}"
+    )
+    target_compile_options(ggml-vulkan PRIVATE
+        "-isystem${_vulkan_headers}"
+        "-isystem${_repo_root}"
     )
 endif()
 

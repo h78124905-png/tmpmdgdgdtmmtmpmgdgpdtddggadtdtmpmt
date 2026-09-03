@@ -46,13 +46,86 @@ void set_error(const std::string & s) {
     LOGE("%s", s.c_str());
 }
 
+// JNI's GetStringUTFChars/NewStringUTF use Modified UTF-8, which is not
+// suitable for arbitrary Unicode (notably emoji and supplementary CJK). Keep
+// the native llama.cpp boundary as ordinary UTF-8 and explicitly convert to
+// and from Java's UTF-16 strings.
+std::string utf16_to_utf8(const jchar * chars, jsize length) {
+    std::string result;
+    result.reserve(static_cast<size_t>(length) * 3);
+    for (jsize i = 0; i < length; ++i) {
+        uint32_t cp = chars[i];
+        if (cp >= 0xD800 && cp <= 0xDBFF && i + 1 < length) {
+            const uint32_t low = chars[i + 1];
+            if (low >= 0xDC00 && low <= 0xDFFF) {
+                cp = 0x10000 + ((cp - 0xD800) << 10) + (low - 0xDC00);
+                ++i;
+            }
+        }
+        if (cp <= 0x7F) {
+            result.push_back(static_cast<char>(cp));
+        } else if (cp <= 0x7FF) {
+            result.push_back(static_cast<char>(0xC0 | (cp >> 6)));
+            result.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+        } else if (cp <= 0xFFFF) {
+            result.push_back(static_cast<char>(0xE0 | (cp >> 12)));
+            result.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+            result.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+        } else {
+            result.push_back(static_cast<char>(0xF0 | (cp >> 18)));
+            result.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
+            result.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+            result.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+        }
+    }
+    return result;
+}
+
 std::string get_string(JNIEnv * env, jstring value) {
     if (!value) return {};
-    const char * chars = env->GetStringUTFChars(value, nullptr);
+    const jsize length = env->GetStringLength(value);
+    const jchar * chars = env->GetStringChars(value, nullptr);
     if (!chars) return {};
-    std::string result(chars);
-    env->ReleaseStringUTFChars(value, chars);
+    const std::string result = utf16_to_utf8(chars, length);
+    env->ReleaseStringChars(value, chars);
     return result;
+}
+
+jstring utf8_to_jstring(JNIEnv * env, const std::string & value) {
+    std::vector<jchar> utf16;
+    utf16.reserve(value.size());
+    for (size_t i = 0; i < value.size();) {
+        const unsigned char c = static_cast<unsigned char>(value[i]);
+        uint32_t cp = 0;
+        size_t bytes = 0;
+        if (c <= 0x7F) {
+            cp = c; bytes = 1;
+        } else if ((c & 0xE0) == 0xC0 && i + 1 < value.size()) {
+            cp = ((c & 0x1F) << 6) | (static_cast<unsigned char>(value[i + 1]) & 0x3F); bytes = 2;
+        } else if ((c & 0xF0) == 0xE0 && i + 2 < value.size()) {
+            cp = ((c & 0x0F) << 12) |
+                 ((static_cast<unsigned char>(value[i + 1]) & 0x3F) << 6) |
+                 (static_cast<unsigned char>(value[i + 2]) & 0x3F); bytes = 3;
+        } else if ((c & 0xF8) == 0xF0 && i + 3 < value.size()) {
+            cp = ((c & 0x07) << 18) |
+                 ((static_cast<unsigned char>(value[i + 1]) & 0x3F) << 12) |
+                 ((static_cast<unsigned char>(value[i + 2]) & 0x3F) << 6) |
+                 (static_cast<unsigned char>(value[i + 3]) & 0x3F); bytes = 4;
+        } else {
+            cp = 0xFFFD; bytes = 1;
+        }
+        i += bytes;
+        if (cp <= 0xFFFF) {
+            utf16.push_back(static_cast<jchar>(cp));
+        } else if (cp <= 0x10FFFF) {
+            cp -= 0x10000;
+            utf16.push_back(static_cast<jchar>(0xD800 | (cp >> 10)));
+            utf16.push_back(static_cast<jchar>(0xDC00 | (cp & 0x3FF)));
+        } else {
+            utf16.push_back(static_cast<jchar>(0xFFFD));
+        }
+    }
+    return env->NewString(utf16.data(), static_cast<jsize>(utf16.size()));
 }
 
 bool load_progress(float progress, void *) {
@@ -152,7 +225,7 @@ std::string generate_impl(JNIEnv * env, const std::string & prompt_text, int max
         output += piece;
 
         if (callback && on_token && !piece.empty()) {
-            jstring jpiece = env->NewStringUTF(piece.c_str());
+            jstring jpiece = utf8_to_jstring(env, piece);
             env->CallVoidMethod(callback, on_token, jpiece);
             env->DeleteLocalRef(jpiece);
             if (env->ExceptionCheck()) {
@@ -195,9 +268,6 @@ Java_com_example_lfmmobile_LlamaEngine_nativeLoadModelFromPath(
 
     try {
         llama_model_params model_params = llama_model_default_params();
-        // Use all eligible layers on the Vulkan backend. If Vulkan cannot be
-        // initialized on a device, llama.cpp can report the backend failure
-        // instead of silently pretending this is a CPU-only build.
         model_params.n_gpu_layers = -1;
         model_params.progress_callback = load_progress;
         model_params.progress_callback_user_data = nullptr;
@@ -266,13 +336,13 @@ Java_com_example_lfmmobile_LlamaEngine_nativeLoadModelFromPath(
 
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_example_lfmmobile_LlamaEngine_nativeGetLastError(JNIEnv * env, jobject) {
-    return env->NewStringUTF(g_engine.last_error.c_str());
+    return utf8_to_jstring(env, g_engine.last_error);
 }
 
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_example_lfmmobile_LlamaEngine_nativeGenerate(
         JNIEnv * env, jobject, jstring prompt, jint max_tokens) {
-    return env->NewStringUTF(generate_impl(env, get_string(env, prompt), max_tokens, nullptr).c_str());
+    return utf8_to_jstring(env, generate_impl(env, get_string(env, prompt), max_tokens, nullptr));
 }
 
 extern "C" JNIEXPORT jstring JNICALL
@@ -280,11 +350,11 @@ Java_com_example_lfmmobile_LlamaEngine_nativeGenerateStream(
         JNIEnv * env, jobject, jstring prompt, jint max_tokens, jobject callback) {
     try {
         const std::string result = generate_impl(env, get_string(env, prompt), max_tokens, callback);
-        return env->NewStringUTF(result.c_str());
+        return utf8_to_jstring(env, result);
     } catch (const std::exception & e) {
-        return env->NewStringUTF((std::string("[stream exception] ") + e.what()).c_str());
+        return utf8_to_jstring(env, std::string("[stream exception] ") + e.what());
     } catch (...) {
-        return env->NewStringUTF("[stream exception]");
+        return utf8_to_jstring(env, "[stream exception]");
     }
 }
 

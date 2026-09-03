@@ -38,13 +38,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y glslc spirv-headers ninja-build
 
-          # Vulkan-Headers is deliberately kept in the workspace. Android clang
-          # uses the NDK sysroot and does not reliably expose Ubuntu's /usr/include
-          # during the ggml-vulkan cross compile.
+          # Keep both Vulkan-Hpp and SPIR-V headers in the workspace so the
+          # Android cross compiler never needs to search the host /usr/include.
           git clone --depth 1 https://github.com/KhronosGroup/Vulkan-Headers.git "$GITHUB_WORKSPACE/Vulkan-Headers"
+          cp -a /usr/include/spirv "$GITHUB_WORKSPACE/spirv"
 
           test -f "$GITHUB_WORKSPACE/Vulkan-Headers/include/vulkan/vulkan.h"
           test -f "$GITHUB_WORKSPACE/Vulkan-Headers/include/vulkan/vulkan.hpp"
+          test -f "$GITHUB_WORKSPACE/spirv/unified1/spirv.hpp"
           test -f /usr/share/cmake/SPIRV-Headers/SPIRV-HeadersConfig.cmake
           echo "Workspace Vulkan-Headers and SPIR-V dependencies verified"
 

@@ -37,30 +37,22 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y glslc spirv-headers ninja-build
-
-          # Keep both Vulkan-Hpp and SPIR-V headers in the workspace so the
-          # Android cross compiler never needs to search the host /usr/include.
           git clone --depth 1 https://github.com/KhronosGroup/Vulkan-Headers.git "$GITHUB_WORKSPACE/Vulkan-Headers"
           cp -a /usr/include/spirv "$GITHUB_WORKSPACE/spirv"
-
           test -f "$GITHUB_WORKSPACE/Vulkan-Headers/include/vulkan/vulkan.h"
           test -f "$GITHUB_WORKSPACE/Vulkan-Headers/include/vulkan/vulkan.hpp"
           test -f "$GITHUB_WORKSPACE/spirv/unified1/spirv.hpp"
           test -f /usr/share/cmake/SPIRV-Headers/SPIRV-HeadersConfig.cmake
-          echo "Workspace Vulkan-Headers and SPIR-V dependencies verified"
-
           SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
           NDK="$SDK_ROOT/ndk/27.2.12479018"
           test -f "$NDK/shader-tools/linux-x86_64/glslc"
           test -f "$NDK/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/26/libvulkan.so"
-          echo "Android NDK Vulkan dependencies verified"
 
       - name: Locate Android Build Tools
         shell: bash
         run: |
           set -euo pipefail
           SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
-          test -n "$SDK_ROOT"
           APKSIGNER="$(find "$SDK_ROOT/build-tools" -type f -name apksigner -perm -111 | sort -V | tail -n 1)"
           test -n "$APKSIGNER"
           echo "APKSIGNER=$APKSIGNER" >> "$GITHUB_ENV"
@@ -83,10 +75,10 @@ jobs:
             sed -i '1i @file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)' "$FILE"
           fi
 
-      - name: Force Vulkan GPU binding
+      - name: Apply backend and thinking fixes
         run: |
-          python3 scripts/force_vulkan_gpu.py
-          grep -n "forcing Vulkan device" app/src/main/cpp/native-lib.cpp
+          python3 scripts/apply_gpu_toggle_and_think_fix.py
+          grep -n "GPU (Vulkan)\|private var mode = Mode.THINKING\|use_gpu" app/src/main/java/com/example/lfmmobile/MainActivity.kt app/src/main/cpp/native-lib.cpp
 
       - name: Build release APK
         run: |

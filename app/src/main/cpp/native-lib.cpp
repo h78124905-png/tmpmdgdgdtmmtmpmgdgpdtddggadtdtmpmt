@@ -134,8 +134,6 @@ jstring utf8_to_jstring(JNIEnv * env, const std::string & value) {
     return env->NewString(utf16.empty() ? nullptr : utf16.data(), static_cast<jsize>(utf16.size()));
 }
 
-// Token pieces are byte-oriented and may split a UTF-8 code point across
-// tokens. Only send complete UTF-8 sequences over JNI.
 size_t complete_utf8_prefix(const std::string & s) {
     size_t i = 0;
     while (i < s.size()) {
@@ -249,7 +247,9 @@ std::string generate_impl(JNIEnv * env, const std::string & prompt_text, int max
         return "[model not loaded]";
     if (prompt_text.empty()) return {};
 
-    llama_memory_clear(llama_get_memory(g_engine.context), false);
+    // Preserve the KV cache across turns. The prompt is constructed with the
+    // previous conversation as an unchanged prefix, so llama.cpp can reuse it.
+    // Do not clear memory here: clearing it defeats prompt/prefix caching.
     common_params_sampling sampling;
     sampling.temp = 0.7f;
     sampling.top_k = 40;
@@ -287,13 +287,24 @@ std::string generate_impl(JNIEnv * env, const std::string & prompt_text, int max
         if (!on_stats && env->ExceptionCheck()) env->ExceptionClear();
     }
 
-    // Prefill. DSpark consumes the target hidden-state features produced here.
+    const auto prefill_start = std::chrono::steady_clock::now();
     const uint32_t n_batch = std::max<uint32_t>(1, llama_n_batch(g_engine.context));
+    LOGI("[prefill] prompt_tokens=%zu n_batch=%u n_ubatch=%u", input.size(), n_batch,
+         static_cast<unsigned>(llama_n_ubatch(g_engine.context)));
+
+    // Only the final prompt token needs logits for the first sampling step.
+    // Requesting logits for every token adds unnecessary work during prefill.
     llama_batch batch = llama_batch_init(std::min<uint32_t>(n_batch, input.size()), 0, 1);
     for (size_t i = 0; i < input.size(); ++i) {
-        common_batch_add(batch, input[i], static_cast<llama_pos>(i), {0}, true);
+        const bool need_logits = (i + 1 == input.size());
+        common_batch_add(batch, input[i], static_cast<llama_pos>(i), {0}, need_logits);
         if (batch.n_tokens == static_cast<int>(n_batch) || i + 1 == input.size()) {
-            if (!decode_batch(g_engine.context, batch)) { llama_batch_free(batch); return "[prompt decode failed]"; }
+            if (!decode_batch(g_engine.context, batch)) {
+                llama_batch_free(batch);
+                return "[prompt decode failed]";
+            }
+            // DSpark needs the target hidden-state features from each prefill
+            // batch, so retain this hook when speculative decoding is enabled.
             if (g_engine.speculative && !common_speculative_process(g_engine.speculative.get(), batch)) {
                 llama_batch_free(batch);
                 return "[speculative prefill failed]";
@@ -302,6 +313,13 @@ std::string generate_impl(JNIEnv * env, const std::string & prompt_text, int max
         }
     }
     llama_batch_free(batch);
+
+    const auto prefill_end = std::chrono::steady_clock::now();
+    const int64_t prefill_ms = std::max<int64_t>(0,
+        std::chrono::duration_cast<std::chrono::milliseconds>(prefill_end - prefill_start).count());
+    LOGI("[prefill] completed prompt_tokens=%zu elapsed_ms=%lld speed=%.2f tok/s",
+         input.size(), static_cast<long long>(prefill_ms),
+         prefill_ms > 0 ? static_cast<double>(input.size()) * 1000.0 / prefill_ms : 0.0);
 
     std::vector<llama_token> history = input;
     llama_pos n_past = static_cast<llama_pos>(input.size());
@@ -322,8 +340,6 @@ std::string generate_impl(JNIEnv * env, const std::string & prompt_text, int max
         return true;
     };
 
-    // The first sampled token is the anchor used by DSpark, but it is also a
-    // real output token and must not disappear from the UI.
     if (!emit_generated(sampled)) {
         if (callback && on_token) emit_final_utf8(env, callback, on_token, utf8_pending);
         return output;
@@ -361,7 +377,6 @@ std::string generate_impl(JNIEnv * env, const std::string & prompt_text, int max
             common_speculative_draft(g_engine.speculative.get());
 
             if (drafts.empty()) {
-                // A failed draft is not fatal; continue with target-only decoding.
                 g_engine.speculative.reset();
                 g_engine.draft_init.reset();
                 continue;
@@ -570,19 +585,44 @@ Java_com_example_lfmmobile_LlamaEngine_nativeGetLastError(JNIEnv * env, jobject)
 }
 
 extern "C" JNIEXPORT jstring JNICALL
-Java_com_example_lfmmobile_LlamaEngine_nativeGenerate(JNIEnv * env, jobject, jstring prompt, jint max_tokens) {
-    return utf8_to_jstring(env, generate_impl(env, get_string(env, prompt), max_tokens, nullptr));
-}
-
-extern "C" JNIEXPORT jstring JNICALL
-Java_com_example_lfmmobile_LlamaEngine_nativeGenerateStream(JNIEnv * env, jobject, jstring prompt, jint max_tokens, jobject callback) {
+Java_com_example_lfmmobile_LlamaEngine_nativeGenerate(
+        JNIEnv * env, jobject, jstring prompt, jint max_tokens) {
+    const std::string prompt_text = get_string(env, prompt);
     try {
-        const std::string result = generate_impl(env, get_string(env, prompt), max_tokens, callback);
+        const std::string result = generate_impl(env, prompt_text, max_tokens, nullptr);
         return utf8_to_jstring(env, result);
     } catch (const std::exception & e) {
-        return utf8_to_jstring(env, std::string("[stream exception] ") + e.what());
+        set_error(std::string("stage=generate; ") + e.what());
+        return utf8_to_jstring(env, "[generation exception]");
     } catch (...) {
-        return utf8_to_jstring(env, "[stream exception]");
+        set_error("stage=generate; unknown native exception");
+        return utf8_to_jstring(env, "[generation exception]");
+    }
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_example_lfmmobile_LlamaEngine_nativeGenerateStream(
+        JNIEnv * env, jobject, jstring prompt, jint max_tokens, jobject callback) {
+    const std::string prompt_text = get_string(env, prompt);
+    try {
+        const std::string result = generate_impl(env, prompt_text, max_tokens, callback);
+        if (callback && !result.empty()) {
+            jclass callback_class = env->GetObjectClass(callback);
+            const jmethodID on_token = env->GetMethodID(callback_class, "onToken", "(Ljava/lang/String;)V");
+            env->DeleteLocalRef(callback_class);
+            if (on_token) {
+                jstring jresult = utf8_to_jstring(env, result);
+                env->CallVoidMethod(callback, on_token, jresult);
+                env->DeleteLocalRef(jresult);
+                if (env->ExceptionCheck()) env->ExceptionClear();
+            } else if (env->ExceptionCheck()) {
+                env->ExceptionClear();
+            }
+        }
+    } catch (const std::exception & e) {
+        set_error(std::string("stage=generate_stream; ") + e.what());
+    } catch (...) {
+        set_error("stage=generate_stream; unknown native exception");
     }
 }
 

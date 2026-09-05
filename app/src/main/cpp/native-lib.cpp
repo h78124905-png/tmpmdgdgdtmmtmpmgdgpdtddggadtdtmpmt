@@ -30,6 +30,7 @@ struct Engine {
     std::string last_error;
     std::string gpu_name = "CPU";
     bool backend_initialized = false;
+    llama_tokens cached_prompt;
 };
 Engine g_engine;
 
@@ -49,6 +50,7 @@ void free_engine() {
     g_engine.context = nullptr;
     g_engine.vocab = nullptr;
     g_engine.gpu_name = "CPU";
+    g_engine.cached_prompt.clear();
 }
 
 void set_error(const std::string & s) {
@@ -68,9 +70,8 @@ std::string utf16_to_utf8(const jchar * chars, jsize length) {
                 ++i;
             }
         }
-        if (cp <= 0x7F) {
-            result.push_back(static_cast<char>(cp));
-        } else if (cp <= 0x7FF) {
+        if (cp <= 0x7F) result.push_back(static_cast<char>(cp));
+        else if (cp <= 0x7FF) {
             result.push_back(static_cast<char>(0xC0 | (cp >> 6)));
             result.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
         } else if (cp <= 0xFFFF) {
@@ -104,32 +105,15 @@ jstring utf8_to_jstring(JNIEnv * env, const std::string & value) {
         const unsigned char c = static_cast<unsigned char>(value[i]);
         uint32_t cp = 0;
         size_t bytes = 0;
-        if (c <= 0x7F) {
-            cp = c; bytes = 1;
-        } else if ((c & 0xE0) == 0xC0 && i + 1 < value.size()) {
-            cp = ((c & 0x1F) << 6) | (static_cast<unsigned char>(value[i + 1]) & 0x3F); bytes = 2;
-        } else if ((c & 0xF0) == 0xE0 && i + 2 < value.size()) {
-            cp = ((c & 0x0F) << 12) |
-                 ((static_cast<unsigned char>(value[i + 1]) & 0x3F) << 6) |
-                 (static_cast<unsigned char>(value[i + 2]) & 0x3F); bytes = 3;
-        } else if ((c & 0xF8) == 0xF0 && i + 3 < value.size()) {
-            cp = ((c & 0x07) << 18) |
-                 ((static_cast<unsigned char>(value[i + 1]) & 0x3F) << 12) |
-                 ((static_cast<unsigned char>(value[i + 2]) & 0x3F) << 6) |
-                 (static_cast<unsigned char>(value[i + 3]) & 0x3F); bytes = 4;
-        } else {
-            cp = 0xFFFD; bytes = 1;
-        }
+        if (c <= 0x7F) { cp = c; bytes = 1; }
+        else if ((c & 0xE0) == 0xC0 && i + 1 < value.size()) { cp = ((c & 0x1F) << 6) | (static_cast<unsigned char>(value[i + 1]) & 0x3F); bytes = 2; }
+        else if ((c & 0xF0) == 0xE0 && i + 2 < value.size()) { cp = ((c & 0x0F) << 12) | ((static_cast<unsigned char>(value[i + 1]) & 0x3F) << 6) | (static_cast<unsigned char>(value[i + 2]) & 0x3F); bytes = 3; }
+        else if ((c & 0xF8) == 0xF0 && i + 3 < value.size()) { cp = ((c & 0x07) << 18) | ((static_cast<unsigned char>(value[i + 1]) & 0x3F) << 12) | ((static_cast<unsigned char>(value[i + 2]) & 0x3F) << 6) | (static_cast<unsigned char>(value[i + 3]) & 0x3F); bytes = 4; }
+        else { cp = 0xFFFD; bytes = 1; }
         i += bytes;
-        if (cp <= 0xFFFF) {
-            utf16.push_back(static_cast<jchar>(cp));
-        } else if (cp <= 0x10FFFF) {
-            cp -= 0x10000;
-            utf16.push_back(static_cast<jchar>(0xD800 | (cp >> 10)));
-            utf16.push_back(static_cast<jchar>(0xDC00 | (cp & 0x3FF)));
-        } else {
-            utf16.push_back(static_cast<jchar>(0xFFFD));
-        }
+        if (cp <= 0xFFFF) utf16.push_back(static_cast<jchar>(cp));
+        else if (cp <= 0x10FFFF) { cp -= 0x10000; utf16.push_back(static_cast<jchar>(0xD800 | (cp >> 10))); utf16.push_back(static_cast<jchar>(0xDC00 | (cp & 0x3FF))); }
+        else utf16.push_back(static_cast<jchar>(0xFFFD));
     }
     return env->NewString(utf16.empty() ? nullptr : utf16.data(), static_cast<jsize>(utf16.size()));
 }
@@ -139,17 +123,10 @@ size_t complete_utf8_prefix(const std::string & s) {
     while (i < s.size()) {
         const unsigned char c = static_cast<unsigned char>(s[i]);
         size_t need = 1;
-        if (c <= 0x7F) need = 1;
-        else if ((c & 0xE0) == 0xC0) need = 2;
-        else if ((c & 0xF0) == 0xE0) need = 3;
-        else if ((c & 0xF8) == 0xF0) need = 4;
-        else { ++i; continue; }
+        if (c <= 0x7F) need = 1; else if ((c & 0xE0) == 0xC0) need = 2; else if ((c & 0xF0) == 0xE0) need = 3; else if ((c & 0xF8) == 0xF0) need = 4; else { ++i; continue; }
         if (i + need > s.size()) break;
         bool ok = true;
-        for (size_t j = 1; j < need; ++j) {
-            const unsigned char x = static_cast<unsigned char>(s[i + j]);
-            if ((x & 0xC0) != 0x80) { ok = false; break; }
-        }
+        for (size_t j = 1; j < need; ++j) if ((static_cast<unsigned char>(s[i + j]) & 0xC0) != 0x80) { ok = false; break; }
         if (!ok) { ++i; continue; }
         i += need;
     }
@@ -181,8 +158,7 @@ void emit_final_utf8(JNIEnv * env, jobject callback, jmethodID on_token, std::st
 void emit_stats(JNIEnv * env, jobject callback, jmethodID on_stats, double tok_per_sec, int64_t elapsed_ms, int context_used, int context_size) {
     if (!callback || !on_stats) return;
     jstring jgpu = utf8_to_jstring(env, g_engine.gpu_name);
-    env->CallVoidMethod(callback, on_stats, tok_per_sec, static_cast<jlong>(elapsed_ms), jgpu,
-                        static_cast<jint>(context_used), static_cast<jint>(context_size));
+    env->CallVoidMethod(callback, on_stats, tok_per_sec, static_cast<jlong>(elapsed_ms), jgpu, static_cast<jint>(context_used), static_cast<jint>(context_size));
     env->DeleteLocalRef(jgpu);
     if (env->ExceptionCheck()) env->ExceptionClear();
 }
@@ -190,10 +166,7 @@ void emit_stats(JNIEnv * env, jobject callback, jmethodID on_stats, double tok_p
 bool load_progress(float progress, void *) {
     static int last_percent = -1;
     const int percent = std::clamp(static_cast<int>(progress * 100.0f), 0, 100);
-    if (percent == 100 || percent >= last_percent + 10) {
-        last_percent = percent;
-        LOGI("[load] llama_model_load_from_file progress=%d%%", percent);
-    }
+    if (percent == 100 || percent >= last_percent + 10) { last_percent = percent; LOGI("[load] llama_model_load_from_file progress=%d%%", percent); }
     return true;
 }
 
@@ -203,8 +176,7 @@ void detect_gpu_backend() {
         ggml_backend_dev_t dev = ggml_backend_dev_get(i);
         const char * name = ggml_backend_dev_name(dev);
         const char * desc = ggml_backend_dev_description(dev);
-        if (name && (std::string(name).find("Vulkan") != std::string::npos ||
-                     std::string(name).find("vulkan") != std::string::npos)) {
+        if (name && (std::string(name).find("Vulkan") != std::string::npos || std::string(name).find("vulkan") != std::string::npos)) {
             g_engine.gpu_name = desc && *desc ? std::string("Vulkan · ") + desc : std::string("Vulkan · ") + name;
             LOGI("[backend] Vulkan GPU backend available: %s", g_engine.gpu_name.c_str());
             return;
@@ -221,15 +193,9 @@ std::vector<common_chat_msg> build_messages(const std::string & prompt_text) {
     while (pos < prompt_text.size()) {
         const size_t end = prompt_text.find('\n', pos);
         const std::string line = prompt_text.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
-        if (line.rfind("User: ", 0) == 0) {
-            messages.push_back({"user", line.substr(6)});
-            current = static_cast<int>(messages.size()) - 1;
-        } else if (line.rfind("Assistant: ", 0) == 0) {
-            messages.push_back({"assistant", line.substr(11)});
-            current = static_cast<int>(messages.size()) - 1;
-        } else if (current >= 0) {
-            messages[current].content += "\n" + line;
-        }
+        if (line.rfind("User: ", 0) == 0) { messages.push_back({"user", line.substr(6)}); current = static_cast<int>(messages.size()) - 1; }
+        else if (line.rfind("Assistant: ", 0) == 0) { messages.push_back({"assistant", line.substr(11)}); current = static_cast<int>(messages.size()) - 1; }
+        else if (current >= 0) messages[current].content += "\n" + line;
         if (end == std::string::npos) break;
         pos = end + 1;
     }
@@ -243,13 +209,9 @@ bool decode_batch(llama_context * context, llama_batch & batch) {
 }
 
 std::string generate_impl(JNIEnv * env, const std::string & prompt_text, int max_tokens, jobject callback) {
-    if (!g_engine.model || !g_engine.context || !g_engine.sampler)
-        return "[model not loaded]";
+    if (!g_engine.model || !g_engine.context || !g_engine.sampler) return "[model not loaded]";
     if (prompt_text.empty()) return {};
 
-    // Preserve the KV cache across turns. The prompt is constructed with the
-    // previous conversation as an unchanged prefix, so llama.cpp can reuse it.
-    // Do not clear memory here: clearing it defeats prompt/prefix caching.
     common_params_sampling sampling;
     sampling.temp = 0.7f;
     sampling.top_k = 40;
@@ -280,47 +242,50 @@ std::string generate_impl(JNIEnv * env, const std::string & prompt_text, int max
         on_token = env->GetMethodID(callback_class, "onToken", "(Ljava/lang/String;)V");
         on_stats = env->GetMethodID(callback_class, "onStats", "(DJLjava/lang/String;II)V");
         env->DeleteLocalRef(callback_class);
-        if (!on_token) {
-            if (env->ExceptionCheck()) env->ExceptionClear();
-            return "[stream callback method not found]";
-        }
+        if (!on_token) { if (env->ExceptionCheck()) env->ExceptionClear(); return "[stream callback method not found]"; }
         if (!on_stats && env->ExceptionCheck()) env->ExceptionClear();
+    }
+
+    // Reuse the existing KV cache only when the new prompt has exactly the
+    // cached prompt as a prefix. Otherwise start a clean context. This avoids
+    // feeding a new prompt into stale KV positions while still making normal
+    // multi-turn chat incremental.
+    size_t common = 0;
+    if (!g_engine.cached_prompt.empty()) {
+        common = std::min(g_engine.cached_prompt.size(), input.size());
+        while (common > 0 && !std::equal(g_engine.cached_prompt.begin(), g_engine.cached_prompt.begin() + static_cast<ptrdiff_t>(common), input.begin())) --common;
+    }
+    if (common == 0 && !g_engine.cached_prompt.empty()) {
+        llama_memory_clear(llama_get_memory(g_engine.context), false);
+    } else if (common < g_engine.cached_prompt.size()) {
+        llama_memory_seq_rm(llama_get_memory(g_engine.context), 0, static_cast<llama_pos>(common), -1);
     }
 
     const auto prefill_start = std::chrono::steady_clock::now();
     const uint32_t n_batch = std::max<uint32_t>(1, llama_n_batch(g_engine.context));
-    LOGI("[prefill] prompt_tokens=%zu n_batch=%u n_ubatch=%u", input.size(), n_batch,
-         static_cast<unsigned>(llama_n_ubatch(g_engine.context)));
+    const uint32_t n_ubatch = llama_n_ubatch(g_engine.context);
+    const size_t to_eval = input.size() - common;
+    LOGI("[prefill] prompt_tokens=%zu cached_tokens=%zu eval_tokens=%zu n_batch=%u n_ubatch=%u", input.size(), common, to_eval, n_batch, n_ubatch);
 
-    // Only the final prompt token needs logits for the first sampling step.
-    // Requesting logits for every token adds unnecessary work during prefill.
-    llama_batch batch = llama_batch_init(std::min<uint32_t>(n_batch, input.size()), 0, 1);
-    for (size_t i = 0; i < input.size(); ++i) {
-        const bool need_logits = (i + 1 == input.size());
-        common_batch_add(batch, input[i], static_cast<llama_pos>(i), {0}, need_logits);
-        if (batch.n_tokens == static_cast<int>(n_batch) || i + 1 == input.size()) {
-            if (!decode_batch(g_engine.context, batch)) {
-                llama_batch_free(batch);
-                return "[prompt decode failed]";
+    if (to_eval > 0) {
+        llama_batch batch = llama_batch_init(std::min<uint32_t>(n_batch, static_cast<uint32_t>(to_eval)), 0, 1);
+        for (size_t i = common; i < input.size(); ++i) {
+            const bool need_logits = (i + 1 == input.size());
+            common_batch_add(batch, input[i], static_cast<llama_pos>(i), {0}, need_logits);
+            if (batch.n_tokens == static_cast<int>(n_batch) || i + 1 == input.size()) {
+                if (!decode_batch(g_engine.context, batch)) { llama_batch_free(batch); return "[prompt decode failed]"; }
+                if (g_engine.speculative && !common_speculative_process(g_engine.speculative.get(), batch)) { llama_batch_free(batch); return "[speculative prefill failed]"; }
+                common_batch_clear(batch);
             }
-            // DSpark needs the target hidden-state features from each prefill
-            // batch, so retain this hook when speculative decoding is enabled.
-            if (g_engine.speculative && !common_speculative_process(g_engine.speculative.get(), batch)) {
-                llama_batch_free(batch);
-                return "[speculative prefill failed]";
-            }
-            common_batch_clear(batch);
         }
+        llama_batch_free(batch);
     }
-    llama_batch_free(batch);
 
     const auto prefill_end = std::chrono::steady_clock::now();
-    const int64_t prefill_ms = std::max<int64_t>(0,
-        std::chrono::duration_cast<std::chrono::milliseconds>(prefill_end - prefill_start).count());
-    LOGI("[prefill] completed prompt_tokens=%zu elapsed_ms=%lld speed=%.2f tok/s",
-         input.size(), static_cast<long long>(prefill_ms),
-         prefill_ms > 0 ? static_cast<double>(input.size()) * 1000.0 / prefill_ms : 0.0);
+    const int64_t prefill_ms = std::max<int64_t>(0, std::chrono::duration_cast<std::chrono::milliseconds>(prefill_end - prefill_start).count());
+    LOGI("[prefill] completed prompt_tokens=%zu cached_tokens=%zu eval_tokens=%zu elapsed_ms=%lld speed=%.2f tok/s", input.size(), common, to_eval, static_cast<long long>(prefill_ms), prefill_ms > 0 ? static_cast<double>(to_eval) * 1000.0 / prefill_ms : 0.0);
 
+    g_engine.cached_prompt = input;
     std::vector<llama_token> history = input;
     llama_pos n_past = static_cast<llama_pos>(input.size());
     llama_token sampled = common_sampler_sample(g_engine.sampler.get(), g_engine.context, static_cast<int>(input.size()) - 1);
@@ -344,15 +309,13 @@ std::string generate_impl(JNIEnv * env, const std::string & prompt_text, int max
         if (callback && on_token) emit_final_utf8(env, callback, on_token, utf8_pending);
         return output;
     }
-
     if (g_engine.speculative) common_speculative_begin(g_engine.speculative.get(), 0, history);
 
     const int n_predict = std::max(1, max_tokens);
     int step = 1;
     while (step < n_predict) {
         if (g_engine.speculative) {
-            std::vector<uint8_t> ckpt_tgt;
-            std::vector<uint8_t> ckpt_dft;
+            std::vector<uint8_t> ckpt_tgt, ckpt_dft;
             const bool use_ckpt = common_context_can_seq_rm(g_engine.context) == COMMON_CONTEXT_SEQ_RM_TYPE_FULL;
             if (use_ckpt) {
                 const size_t st = llama_state_seq_get_size_ext(g_engine.context, 0, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
@@ -365,79 +328,42 @@ std::string generate_impl(JNIEnv * env, const std::string & prompt_text, int max
                     if (sd) llama_state_seq_get_data_ext(dctx, ckpt_dft.data(), sd, 0, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
                 }
             }
-
             llama_tokens drafts;
             auto & dp = common_speculative_get_draft_params(g_engine.speculative.get(), 0);
-            dp.drafting = true;
-            dp.n_max = std::min(10, n_predict - step);
-            dp.n_past = n_past;
-            dp.id_last = sampled;
-            dp.prompt = &history;
-            dp.result = &drafts;
+            dp.drafting = true; dp.n_max = std::min(10, n_predict - step); dp.n_past = n_past; dp.id_last = sampled; dp.prompt = &history; dp.result = &drafts;
             common_speculative_draft(g_engine.speculative.get());
-
-            if (drafts.empty()) {
-                g_engine.speculative.reset();
-                g_engine.draft_init.reset();
-                continue;
-            }
-
+            if (drafts.empty()) { g_engine.speculative.reset(); g_engine.draft_init.reset(); continue; }
             const int n_verify = 1 + static_cast<int>(drafts.size());
             llama_batch verify = llama_batch_init(n_verify, 0, 1);
             common_batch_add(verify, sampled, n_past, {0}, true);
-            for (size_t i = 0; i < drafts.size(); ++i) {
-                common_batch_add(verify, drafts[i], n_past + 1 + static_cast<llama_pos>(i), {0}, true);
-            }
-
-            if (g_engine.draft_init && g_engine.draft_init->context()) {
-                llama_memory_seq_rm(llama_get_memory(g_engine.draft_init->context()), 0, n_past, -1);
-            }
-            if (!decode_batch(g_engine.context, verify)) {
-                llama_batch_free(verify);
-                return "[speculative target decode failed]";
-            }
-            if (!common_speculative_process(g_engine.speculative.get(), verify)) {
-                llama_batch_free(verify);
-                return "[speculative process failed]";
-            }
-
+            for (size_t i = 0; i < drafts.size(); ++i) common_batch_add(verify, drafts[i], n_past + 1 + static_cast<llama_pos>(i), {0}, true);
+            if (g_engine.draft_init && g_engine.draft_init->context()) llama_memory_seq_rm(llama_get_memory(g_engine.draft_init->context()), 0, n_past, -1);
+            if (!decode_batch(g_engine.context, verify)) { llama_batch_free(verify); return "[speculative target decode failed]"; }
+            if (!common_speculative_process(g_engine.speculative.get(), verify)) { llama_batch_free(verify); return "[speculative process failed]"; }
             std::vector<llama_token> ids = common_sampler_sample_and_accept_n(g_engine.sampler.get(), g_engine.context, drafts);
             llama_batch_free(verify);
             if (ids.empty()) return "[speculative sampling failed]";
-
             const size_t accepted = ids.size() - 1;
             common_speculative_accept(g_engine.speculative.get(), 0, static_cast<uint16_t>(accepted));
             const llama_pos next_n_past = n_past + static_cast<llama_pos>(accepted);
             const llama_pos remove_from = next_n_past + 1;
-
             if (use_ckpt && (!ckpt_tgt.empty() || !ckpt_dft.empty())) {
                 if (!ckpt_tgt.empty()) llama_state_seq_set_data_ext(g_engine.context, ckpt_tgt.data(), ckpt_tgt.size(), 0, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
                 auto * dctx = g_engine.draft_init ? g_engine.draft_init->context() : nullptr;
                 if (dctx && !ckpt_dft.empty()) llama_state_seq_set_data_ext(dctx, ckpt_dft.data(), ckpt_dft.size(), 0, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
-
                 if (accepted > 0) {
                     llama_batch redo = llama_batch_init(static_cast<int>(accepted), 0, 1);
-                    for (size_t i = 0; i < accepted; ++i) {
-                        common_batch_add(redo, ids[i], n_past + static_cast<llama_pos>(i), {0}, i + 1 == accepted);
-                    }
+                    for (size_t i = 0; i < accepted; ++i) common_batch_add(redo, ids[i], n_past + static_cast<llama_pos>(i), {0}, i + 1 == accepted);
                     if (!decode_batch(g_engine.context, redo)) { llama_batch_free(redo); return "[speculative rollback decode failed]"; }
                     llama_batch_free(redo);
                 }
             } else {
                 llama_memory_seq_rm(llama_get_memory(g_engine.context), 0, remove_from, -1);
-                if (g_engine.draft_init && g_engine.draft_init->context()) {
-                    llama_memory_seq_rm(llama_get_memory(g_engine.draft_init->context()), 0, remove_from, -1);
-                }
+                if (g_engine.draft_init && g_engine.draft_init->context()) llama_memory_seq_rm(llama_get_memory(g_engine.draft_init->context()), 0, remove_from, -1);
             }
-
-            for (const llama_token id : ids) {
-                if (step >= n_predict) break;
-                if (!emit_generated(id)) { step = n_predict; break; }
-                ++step;
-            }
+            for (const llama_token id : ids) { if (step >= n_predict) break; if (!emit_generated(id)) { step = n_predict; break; } ++step; }
             history.insert(history.end(), ids.begin(), ids.end() - 1);
-            sampled = ids.back();
-            n_past = next_n_past;
+            sampled = ids.back(); n_past = next_n_past;
         } else {
             llama_batch next_batch = llama_batch_init(1, 0, 1);
             common_batch_add(next_batch, sampled, n_past, {0}, true);
@@ -446,62 +372,36 @@ std::string generate_impl(JNIEnv * env, const std::string & prompt_text, int max
             common_sampler_accept(g_engine.sampler.get(), next, true);
             llama_batch_free(next_batch);
             if (!emit_generated(next)) break;
-            sampled = next;
-            ++n_past;
-            ++step;
+            sampled = next; ++n_past; ++step;
         }
-
         if (callback && on_stats) {
             const auto now = std::chrono::steady_clock::now();
             const int64_t elapsed_ms = std::max<int64_t>(1, std::chrono::duration_cast<std::chrono::milliseconds>(now - t_start).count());
-            emit_stats(env, callback, on_stats, static_cast<double>(generated) * 1000.0 / static_cast<double>(elapsed_ms), elapsed_ms,
-                       static_cast<int>(n_past), static_cast<int>(n_ctx));
+            emit_stats(env, callback, on_stats, static_cast<double>(generated) * 1000.0 / static_cast<double>(elapsed_ms), elapsed_ms, static_cast<int>(n_past), static_cast<int>(n_ctx));
         }
     }
-
     if (callback && on_token) emit_final_utf8(env, callback, on_token, utf8_pending);
     return output;
 }
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
-Java_com_example_lfmmobile_LlamaEngine_nativeLoadModelFromPath(
-        JNIEnv * env, jobject, jstring model_path, jstring draft_model_path, jint context_size) {
+Java_com_example_lfmmobile_LlamaEngine_nativeLoadModelFromPath(JNIEnv * env, jobject, jstring model_path, jstring draft_model_path, jint context_size) {
     LOGI("[load] JNI entered");
     const std::string path = get_string(env, model_path);
     const std::string draft_path = get_string(env, draft_model_path);
-    if (path.empty()) {
-        set_error("stage=path; model path is empty");
-        return JNI_FALSE;
-    }
-
+    if (path.empty()) { set_error("stage=path; model path is empty"); return JNI_FALSE; }
     free_engine();
     g_engine.last_error.clear();
-    if (!g_engine.backend_initialized) {
-        llama_backend_init();
-        g_engine.backend_initialized = true;
-        detect_gpu_backend();
-    }
-
+    if (!g_engine.backend_initialized) { llama_backend_init(); g_engine.backend_initialized = true; detect_gpu_backend(); }
     try {
         llama_model_params model_params = llama_model_default_params();
-        model_params.n_gpu_layers = -1;
-        model_params.progress_callback = load_progress;
-        model_params.progress_callback_user_data = nullptr;
-
+        model_params.n_gpu_layers = -1; model_params.progress_callback = load_progress; model_params.progress_callback_user_data = nullptr;
         LOGI("[load] model load starting (Vulkan GPU offload requested)");
         llama_model * model = llama_model_load_from_file(path.c_str(), model_params);
-        if (!model) {
-            set_error("stage=model_load; llama_model_load_from_file returned null");
-            return JNI_FALSE;
-        }
+        if (!model) { set_error("stage=model_load; llama_model_load_from_file returned null"); return JNI_FALSE; }
         const llama_vocab * vocab = llama_model_get_vocab(model);
-        if (!vocab) {
-            llama_model_free(model);
-            set_error("stage=model_validation; loaded model has no vocabulary");
-            return JNI_FALSE;
-        }
-
+        if (!vocab) { llama_model_free(model); set_error("stage=model_validation; loaded model has no vocabulary"); return JNI_FALSE; }
         llama_context_params context_params = llama_context_default_params();
         context_params.n_ctx = std::max(512, static_cast<int>(context_size));
         context_params.n_batch = std::min(context_params.n_ctx, 256u);
@@ -510,99 +410,43 @@ Java_com_example_lfmmobile_LlamaEngine_nativeLoadModelFromPath(
         context_params.n_threads = std::max(1, static_cast<int>(std::thread::hardware_concurrency() / 2));
         context_params.n_threads_batch = context_params.n_threads;
         llama_context * context = llama_init_from_model(model, context_params);
-        if (!context) {
-            llama_model_free(model);
-            set_error("stage=context_init; GGUF loaded but llama_init_from_model returned null");
-            return JNI_FALSE;
-        }
-
-        common_params_sampling sampling;
-        sampling.temp = 0.7f;
-        sampling.top_k = 40;
-        sampling.top_p = 0.95f;
+        if (!context) { llama_model_free(model); set_error("stage=context_init; GGUF loaded but llama_init_from_model returned null"); return JNI_FALSE; }
+        common_params_sampling sampling; sampling.temp = 0.7f; sampling.top_k = 40; sampling.top_p = 0.95f;
         auto sampler = common_sampler_init(model, sampling);
-        if (!sampler) {
-            llama_free(context);
-            llama_model_free(model);
-            set_error("stage=sampler_init; model and context loaded but sampler initialization failed");
-            return JNI_FALSE;
-        }
-
-        g_engine.model = model;
-        g_engine.context = context;
-        g_engine.vocab = vocab;
-        g_engine.sampler.reset(sampler);
-
+        if (!sampler) { llama_free(context); llama_model_free(model); set_error("stage=sampler_init; model and context loaded but sampler initialization failed"); return JNI_FALSE; }
+        g_engine.model = model; g_engine.context = context; g_engine.vocab = vocab; g_engine.sampler.reset(sampler);
         if (!draft_path.empty()) {
             LOGI("[spec] initializing LFM2.5 DSpark draft: %s", draft_path.c_str());
             common_params spec_params;
-            spec_params.model.path = draft_path;
-            spec_params.n_ctx = context_params.n_ctx;
-            spec_params.n_batch = context_params.n_batch;
-            spec_params.n_ubatch = context_params.n_ubatch;
-            spec_params.n_parallel = 1;
-            spec_params.n_sequences = 1;
-            spec_params.speculative.types = { COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK };
-            spec_params.speculative.draft.mparams.path = draft_path;
-            spec_params.speculative.draft.n_max = 10;
-            spec_params.speculative.draft.n_min = 0;
-            spec_params.speculative.draft.n_gpu_layers = -1;
-            spec_params.speculative.draft.ctx_tgt = context;
-
+            spec_params.model.path = draft_path; spec_params.n_ctx = context_params.n_ctx; spec_params.n_batch = context_params.n_batch; spec_params.n_ubatch = context_params.n_ubatch;
+            spec_params.n_parallel = 1; spec_params.n_sequences = 1; spec_params.speculative.types = { COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK };
+            spec_params.speculative.draft.mparams.path = draft_path; spec_params.speculative.draft.n_max = 10; spec_params.speculative.draft.n_min = 0; spec_params.speculative.draft.n_gpu_layers = -1; spec_params.speculative.draft.ctx_tgt = context;
             g_engine.draft_init = common_speculative_init_from_params(spec_params, model, context);
-            if (!g_engine.draft_init || !g_engine.draft_init->model() || !g_engine.draft_init->context()) {
-                free_engine();
-                set_error("stage=dspark_init; could not initialize the selected DSpark draft. Check that it matches the target model.");
-                return JNI_FALSE;
-            }
+            if (!g_engine.draft_init || !g_engine.draft_init->model() || !g_engine.draft_init->context()) { free_engine(); set_error("stage=dspark_init; could not initialize the selected DSpark draft. Check that it matches the target model."); return JNI_FALSE; }
             spec_params.speculative.draft.ctx_dft = g_engine.draft_init->context();
             g_engine.speculative.reset(common_speculative_init(spec_params.speculative, 1));
-            if (!g_engine.speculative) {
-                free_engine();
-                set_error("stage=dspark_spec; common_speculative_init returned null");
-                return JNI_FALSE;
-            }
+            if (!g_engine.speculative) { free_engine(); set_error("stage=dspark_spec; common_speculative_init returned null"); return JNI_FALSE; }
             LOGI("[spec] DSpark initialized successfully");
         }
-
-        LOGI("[load] model load completed successfully; backend=%s; dspark=%s",
-             g_engine.gpu_name.c_str(), g_engine.speculative ? "on" : "off");
+        LOGI("[load] model load completed successfully; backend=%s; dspark=%s", g_engine.gpu_name.c_str(), g_engine.speculative ? "on" : "off");
         return JNI_TRUE;
-    } catch (const std::exception & e) {
-        set_error(std::string("stage=exception; ") + e.what());
-        free_engine();
-        return JNI_FALSE;
-    } catch (...) {
-        set_error("stage=exception; unknown native exception");
-        free_engine();
-        return JNI_FALSE;
-    }
+    } catch (const std::exception & e) { set_error(std::string("stage=exception; ") + e.what()); free_engine(); return JNI_FALSE; }
+    catch (...) { set_error("stage=exception; unknown native exception"); free_engine(); return JNI_FALSE; }
 }
 
 extern "C" JNIEXPORT jstring JNICALL
-Java_com_example_lfmmobile_LlamaEngine_nativeGetLastError(JNIEnv * env, jobject) {
-    return utf8_to_jstring(env, g_engine.last_error);
-}
+Java_com_example_lfmmobile_LlamaEngine_nativeGetLastError(JNIEnv * env, jobject) { return utf8_to_jstring(env, g_engine.last_error); }
 
 extern "C" JNIEXPORT jstring JNICALL
-Java_com_example_lfmmobile_LlamaEngine_nativeGenerate(
-        JNIEnv * env, jobject, jstring prompt, jint max_tokens) {
+Java_com_example_lfmmobile_LlamaEngine_nativeGenerate(JNIEnv * env, jobject, jstring prompt, jint max_tokens) {
     const std::string prompt_text = get_string(env, prompt);
-    try {
-        const std::string result = generate_impl(env, prompt_text, max_tokens, nullptr);
-        return utf8_to_jstring(env, result);
-    } catch (const std::exception & e) {
-        set_error(std::string("stage=generate; ") + e.what());
-        return utf8_to_jstring(env, "[generation exception]");
-    } catch (...) {
-        set_error("stage=generate; unknown native exception");
-        return utf8_to_jstring(env, "[generation exception]");
-    }
+    try { return utf8_to_jstring(env, generate_impl(env, prompt_text, max_tokens, nullptr)); }
+    catch (const std::exception & e) { set_error(std::string("stage=generate; ") + e.what()); return utf8_to_jstring(env, "[generation exception]"); }
+    catch (...) { set_error("stage=generate; unknown native exception"); return utf8_to_jstring(env, "[generation exception]"); }
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_example_lfmmobile_LlamaEngine_nativeGenerateStream(
-        JNIEnv * env, jobject, jstring prompt, jint max_tokens, jobject callback) {
+Java_com_example_lfmmobile_LlamaEngine_nativeGenerateStream(JNIEnv * env, jobject, jstring prompt, jint max_tokens, jobject callback) {
     const std::string prompt_text = get_string(env, prompt);
     try {
         const std::string result = generate_impl(env, prompt_text, max_tokens, callback);
@@ -610,23 +454,12 @@ Java_com_example_lfmmobile_LlamaEngine_nativeGenerateStream(
             jclass callback_class = env->GetObjectClass(callback);
             const jmethodID on_token = env->GetMethodID(callback_class, "onToken", "(Ljava/lang/String;)V");
             env->DeleteLocalRef(callback_class);
-            if (on_token) {
-                jstring jresult = utf8_to_jstring(env, result);
-                env->CallVoidMethod(callback, on_token, jresult);
-                env->DeleteLocalRef(jresult);
-                if (env->ExceptionCheck()) env->ExceptionClear();
-            } else if (env->ExceptionCheck()) {
-                env->ExceptionClear();
-            }
+            if (on_token) { jstring jresult = utf8_to_jstring(env, result); env->CallVoidMethod(callback, on_token, jresult); env->DeleteLocalRef(jresult); if (env->ExceptionCheck()) env->ExceptionClear(); }
+            else if (env->ExceptionCheck()) env->ExceptionClear();
         }
-    } catch (const std::exception & e) {
-        set_error(std::string("stage=generate_stream; ") + e.what());
-    } catch (...) {
-        set_error("stage=generate_stream; unknown native exception");
-    }
+    } catch (const std::exception & e) { set_error(std::string("stage=generate_stream; ") + e.what()); }
+    catch (...) { set_error("stage=generate_stream; unknown native exception"); }
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_example_lfmmobile_LlamaEngine_nativeUnloadModel(JNIEnv *, jobject) {
-    free_engine();
-}
+Java_com_example_lfmmobile_LlamaEngine_nativeUnloadModel(JNIEnv *, jobject) { free_engine(); }

@@ -2,7 +2,7 @@ name: Android
 
 on:
   push:
-    branches: [main]
+    branches: [main, gpu-vulkan-fix]
   pull_request:
 
 permissions:
@@ -82,6 +82,11 @@ jobs:
           if ! grep -q 'androidx.compose.material3.ExperimentalMaterial3Api' "$FILE"; then
             sed -i '1i @file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)' "$FILE"
           fi
+
+      - name: Force Vulkan GPU binding
+        run: |
+          python3 scripts/force_vulkan_gpu.py
+          grep -n "forcing Vulkan device" app/src/main/cpp/native-lib.cpp
 
       - name: Build release APK
         run: |

@@ -1,1 +1,0 @@
-Vulkan GPU verification branch based on 92cec020.

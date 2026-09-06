@@ -1,0 +1,210 @@
+name: Implement recent model picker
+
+on:
+  push:
+    paths:
+      - '.github/workflows/implement-recent-models.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Patch model picker
+        env:
+          PYTHONUNBUFFERED: '1'
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          p = Path('app/src/main/java/com/example/lfmmobile/MainActivity.kt')
+          s = p.read_text()
+
+          old = 'private data class ModelSlot(val uri: String = "", val name: String = "")\n'
+          new = '''private data class ModelSlot(val uri: String = "", val name: String = "")
+          private data class RecentModel(val uri: String, val name: String, val lastUsed: Long)
+          
+          private const val MODEL_PREFS = "model_library"
+          private const val RECENT_MODELS_KEY = "recent_models"
+          private const val LAST_TARGET_KEY = "last_target"
+          private const val LAST_DRAFT_KEY = "last_draft"
+          
+          private fun loadRecentModels(context: Context): List<RecentModel> {
+              return try {
+                  val raw = context.getSharedPreferences(MODEL_PREFS, Context.MODE_PRIVATE)
+                      .getString(RECENT_MODELS_KEY, "[]") ?: "[]"
+                  val array = JSONArray(raw)
+                  buildList {
+                      for (i in 0 until array.length()) {
+                          val o = array.getJSONObject(i)
+                          val uri = o.optString("uri")
+                          if (uri.isNotBlank()) add(RecentModel(uri, o.optString("name"), o.optLong("lastUsed")))
+                      }
+                  }.sortedByDescending { it.lastUsed }
+              } catch (_: Exception) { emptyList() }
+          }
+          
+          private fun saveRecentModel(context: Context, slot: ModelSlot) {
+              if (slot.uri.isBlank()) return
+              val prefs = context.getSharedPreferences(MODEL_PREFS, Context.MODE_PRIVATE)
+              val models = loadRecentModels(context).filterNot { it.uri == slot.uri }.toMutableList()
+              models.add(0, RecentModel(slot.uri, slot.name, System.currentTimeMillis()))
+              val array = JSONArray()
+              models.take(12).forEach { m ->
+                  array.put(JSONObject().put("uri", m.uri).put("name", m.name).put("lastUsed", m.lastUsed))
+              }
+              prefs.edit().putString(RECENT_MODELS_KEY, array.toString()).apply()
+          }
+          
+          private fun saveLastModels(context: Context, target: ModelSlot, draft: ModelSlot) {
+              val prefs = context.getSharedPreferences(MODEL_PREFS, Context.MODE_PRIVATE)
+              prefs.edit()
+                  .putString(LAST_TARGET_KEY, target.uri)
+                  .putString("last_target_name", target.name)
+                  .putString(LAST_DRAFT_KEY, draft.uri)
+                  .putString("last_draft_name", draft.name)
+                  .apply()
+          }
+          
+          private fun loadLastModel(context: Context, key: String, nameKey: String): ModelSlot {
+              val prefs = context.getSharedPreferences(MODEL_PREFS, Context.MODE_PRIVATE)
+              return ModelSlot(prefs.getString(key, "") ?: "", prefs.getString(nameKey, "") ?: "")
+          }
+          
+          private fun hasPersistedAccess(context: Context, uriString: String): Boolean {
+              if (uriString.isBlank()) return false
+              return try {
+                  val uri = Uri.parse(uriString)
+                  context.contentResolver.persistedUriPermissions.any {
+                      it.uri == uri && it.isReadPermission
+                  }
+              } catch (_: Exception) { false }
+          }
+          
+          private fun persistModelAccess(context: Context, uri: Uri) {
+              try {
+                  context.contentResolver.takePersistableUriPermission(
+                      uri,
+                      android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+                  )
+              } catch (_: SecurityException) { }
+          }
+'''
+          if old not in s: raise SystemExit('model data marker not found')
+          s = s.replace(old, new, 1)
+
+          s = s.replace(
+              '    var target by remember { mutableStateOf(ModelSlot()) }\n    var draft by remember { mutableStateOf(ModelSlot()) }\n',
+              '    var target by remember { mutableStateOf(loadLastModel(activity, LAST_TARGET_KEY, "last_target_name")) }\n    var draft by remember { mutableStateOf(loadLastModel(activity, LAST_DRAFT_KEY, "last_draft_name")) }\n    var recentModels by remember { mutableStateOf(loadRecentModels(activity)) }\n'
+          )
+
+          old = '''        val name = activity.displayName(uri) ?: uri.lastPathSegment?.substringAfterLast('/') ?: "model.gguf"
+        target = ModelSlot(uri.toString(), name)
+        loaded = false
+        loadError = ""
+'''
+          new = '''        persistModelAccess(activity, uri)
+        val name = activity.displayName(uri) ?: uri.lastPathSegment?.substringAfterLast('/') ?: "model.gguf"
+        val slot = ModelSlot(uri.toString(), name)
+        target = slot
+        recentModels = loadRecentModels(activity)
+        loaded = false
+        loadError = ""
+'''
+          if old not in s: raise SystemExit('target picker marker not found')
+          s = s.replace(old, new, 1)
+
+          old = '''        val name = activity.displayName(uri) ?: uri.lastPathSegment?.substringAfterLast('/') ?: "dspark.gguf"
+        draft = ModelSlot(uri.toString(), name)
+        loaded = false
+        loadError = ""
+'''
+          new = '''        persistModelAccess(activity, uri)
+        val name = activity.displayName(uri) ?: uri.lastPathSegment?.substringAfterLast('/') ?: "dspark.gguf"
+        val slot = ModelSlot(uri.toString(), name)
+        draft = slot
+        recentModels = loadRecentModels(activity)
+        loaded = false
+        loadError = ""
+'''
+          if old not in s: raise SystemExit('draft picker marker not found')
+          s = s.replace(old, new, 1)
+
+          old = '''    fun loadModel() {
+        if (target.uri.isEmpty()) return
+'''
+          new = '''    fun selectRecent(slot: RecentModel, asDraft: Boolean) {
+        if (!hasPersistedAccess(activity, slot.uri)) return
+        val model = ModelSlot(slot.uri, slot.name)
+        if (asDraft) draft = model else target = model
+        loaded = false
+        loadError = ""
+    }
+
+    fun loadModel() {
+        if (target.uri.isEmpty()) return
+'''
+          if old not in s: raise SystemExit('loadModel marker not found')
+          s = s.replace(old, new, 1)
+
+          old = '''            loaded = result.first
+            loadError = result.second
+'''
+          new = '''            loaded = result.first
+            loadError = result.second
+            if (loaded) {
+                saveRecentModel(activity, target)
+                if (draft.uri.isNotEmpty()) saveRecentModel(activity, draft)
+                saveLastModels(activity, target, draft)
+                recentModels = loadRecentModels(activity)
+            }
+'''
+          if old not in s: raise SystemExit('load result marker not found')
+          s = s.replace(old, new, 1)
+
+          old = '''    if (showModels) {
+        AlertDialog(
+            onDismissRequest = { showModels = false }, title = { Text("Models") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    ModelCard("Target model", target) { pickerTarget.launch(arrayOf("application/octet-stream", "application/x-gguf", "*/*")) }
+                    ModelCard("DSpark draft (optional)", draft) { pickerDraft.launch(arrayOf("application/octet-stream", "application/x-gguf", "*/*")) }
+'''
+          new = '''    if (showModels) {
+        AlertDialog(
+            onDismissRequest = { showModels = false }, title = { Text("Models") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("Recently used", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    if (recentModels.isEmpty()) {
+                        Text("まだモデルがありません。下の Add model から追加してください。", style = MaterialTheme.typography.bodySmall)
+                    } else {
+                        recentModels.forEach { recent ->
+                            val available = hasPersistedAccess(activity, recent.uri)
+                            ElevatedCard(onClick = { if (available) { target = ModelSlot(recent.uri, recent.name); loaded = false; loadError = "" } }) {
+                                Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Column(Modifier.weight(1f)) {
+                                        Text(recent.name.ifBlank { "model.gguf" }, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                                        Text(if (available) "Target" else "ファイルへのアクセス権が失われています", style = MaterialTheme.typography.bodySmall)
+                                    }
+                                    if (target.uri == recent.uri) Text("✓", fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+                    }
+                    ModelCard("Target model", target) { pickerTarget.launch(arrayOf("application/octet-stream", "application/x-gguf", "*/*")) }
+                    ModelCard("DSpark draft (optional)", draft) { pickerDraft.launch(arrayOf("application/octet-stream", "application/x-gguf", "*/*")) }
+'''
+          if old not in s: raise SystemExit('model dialog marker not found')
+          s = s.replace(old, new, 1)
+
+          p.write_text(s)
+          PY
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app/src/main/java/com/example/lfmmobile/MainActivity.kt
+          git commit -m 'Add persistent recent model picker' || true
+          git push

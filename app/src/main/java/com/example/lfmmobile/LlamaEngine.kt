@@ -8,7 +8,7 @@ class LlamaEngine : AutoCloseable {
     private external fun nativeLoadModelFromPath(modelPath: String, draftModelPath: String, contextSize: Int): Boolean
     private external fun nativeGetLastError(): String
     private external fun nativeGenerate(prompt: String, maxTokens: Int): String
-    private external fun nativeGenerateStream(prompt: String, maxTokens: Int, callback: Any): String
+    private external fun nativeGenerateStream(prompt: String, maxTokens: Int, callback: Any)
     private external fun nativeUnloadModel()
 
     fun loadModelFromPath(modelPath: String, contextSize: Int = 4096): Boolean =
@@ -39,7 +39,8 @@ class LlamaEngine : AutoCloseable {
                 emitStats(tokPerSec, elapsedMs, gpu, contextUsed, contextSize)
             }
         }
-        return nativeGenerateStream(prompt, maxTokens, callback)
+        nativeGenerateStream(prompt, maxTokens, callback)
+        return ""
     }
 
     override fun close() { nativeUnloadModel() }

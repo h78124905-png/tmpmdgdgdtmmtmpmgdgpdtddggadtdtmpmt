@@ -97,24 +97,23 @@ private class ThinkStreamParser {
             when (mode) {
                 Mode.UNKNOWN -> when {
                     open != null && (close == null || open.first <= close.first) -> {
+                        // Text before an explicit opening marker is normal answer text.
                         if (open.first > 0) answerOut += pending.substring(0, open.first)
                         pending = pending.substring(open.first + open.second.length)
                         mode = Mode.THINKING
                     }
                     close != null -> {
-                        // Some templates omit the opening marker but still emit a closing marker.
-                        // Treat everything before the first closing marker as reasoning, not answer.
+                        // Some LFM templates emit reasoning without an opening marker.
+                        // Keep ALL preceding text buffered until the closing marker is seen;
+                        // otherwise reasoning gets irreversibly emitted as the answer.
                         if (close.first > 0) thinkingOut += pending.substring(0, close.first)
                         pending = pending.substring(close.first + close.second.length)
                         mode = Mode.ANSWERING
                     }
                     else -> {
-                        val partial = partialMarkerLength(pending, openingMarkers + closingMarkers)
-                        val emitLength = pending.length - partial
-                        if (emitLength > 0) {
-                            answerOut += pending.substring(0, emitLength)
-                            pending = pending.substring(emitLength)
-                        }
+                        // Do not classify unknown text as answer yet. The next chunks may
+                        // reveal a closing-only reasoning block. Only marker prefixes are
+                        // relevant here; ordinary text remains buffered until finish().
                         break
                     }
                 }

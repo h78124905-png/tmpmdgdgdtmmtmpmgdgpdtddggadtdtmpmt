@@ -449,14 +449,10 @@ extern "C" JNIEXPORT void JNICALL
 Java_com_example_lfmmobile_LlamaEngine_nativeGenerateStream(JNIEnv * env, jobject, jstring prompt, jint max_tokens, jobject callback) {
     const std::string prompt_text = get_string(env, prompt);
     try {
-        const std::string result = generate_impl(env, prompt_text, max_tokens, callback);
-        if (callback && !result.empty()) {
-            jclass callback_class = env->GetObjectClass(callback);
-            const jmethodID on_token = env->GetMethodID(callback_class, "onToken", "(Ljava/lang/String;)V");
-            env->DeleteLocalRef(callback_class);
-            if (on_token) { jstring jresult = utf8_to_jstring(env, result); env->CallVoidMethod(callback, on_token, jresult); env->DeleteLocalRef(jresult); if (env->ExceptionCheck()) env->ExceptionClear(); }
-            else if (env->ExceptionCheck()) env->ExceptionClear();
-        }
+        // generate_impl already emits every generated piece through onToken().
+        // Do not send the accumulated result again here: that duplicates the
+        // complete response after the streaming pass and confuses the parser/UI.
+        (void) generate_impl(env, prompt_text, max_tokens, callback);
     } catch (const std::exception & e) { set_error(std::string("stage=generate_stream; ") + e.what()); }
     catch (...) { set_error("stage=generate_stream; unknown native exception"); }
 }

@@ -61,9 +61,28 @@ private class ThinkStreamParser {
 
     data class Emission(val thinking: String = "", val answer: String = "")
 
-    private fun appendForMode(text: String): Emission = when (mode) {
-        Mode.THINKING -> Emission(thinking = text)
-        Mode.ANSWERING, Mode.UNKNOWN -> Emission(answer = text)
+    private val openingMarkers = listOf(
+        "<think>",
+        "<|think|>",
+        "<|thinking|>",
+        "<|assistant_thinking|>"
+    )
+    private val closingMarkers = listOf(
+        "</think>",
+        "</thinking>",
+        "<|/think|>",
+        "<|/thinking|>",
+        "<|end_think|>",
+        "<|end_thinking|>"
+    )
+
+    private fun earliestMarker(text: String, markers: List<String>): Pair<Int, String>? {
+        var best: Pair<Int, String>? = null
+        for (marker in markers) {
+            val index = text.indexOf(marker)
+            if (index >= 0 && (best == null || index < best!!.first)) best = index to marker
+        }
+        return best
     }
 
     fun consume(chunk: String): Emission {
@@ -72,58 +91,85 @@ private class ThinkStreamParser {
         var answerOut = ""
 
         while (pending.isNotEmpty()) {
-            val open = "<think>"
-            val close = "</think>"
-            val openIndex = pending.indexOf(open)
-            val closeIndex = pending.indexOf(close)
+            val open = earliestMarker(pending, openingMarkers)
+            val close = earliestMarker(pending, closingMarkers)
 
-            when {
-                mode == Mode.UNKNOWN && openIndex >= 0 && (closeIndex < 0 || openIndex <= closeIndex) -> {
-                    if (openIndex > 0) answerOut += pending.substring(0, openIndex)
-                    pending = pending.substring(openIndex + open.length)
-                    mode = Mode.THINKING
-                }
-                mode == Mode.UNKNOWN && closeIndex >= 0 -> {
-                    if (closeIndex > 0) answerOut += pending.substring(0, closeIndex)
-                    pending = pending.substring(closeIndex + close.length)
-                    mode = Mode.ANSWERING
-                }
-                mode == Mode.THINKING && closeIndex >= 0 -> {
-                    if (closeIndex > 0) thinkingOut += pending.substring(0, closeIndex)
-                    pending = pending.substring(closeIndex + close.length)
-                    mode = Mode.ANSWERING
-                }
-                mode == Mode.ANSWERING && openIndex >= 0 -> {
-                    if (openIndex > 0) answerOut += pending.substring(0, openIndex)
-                    pending = pending.substring(openIndex + open.length)
-                    mode = Mode.THINKING
-                }
-                else -> {
-                    // Keep a possible partial marker across streaming chunks.
-                    val markers = if (mode == Mode.THINKING) listOf(close) else listOf(open, close)
-                    var keep = 0
-                    for (marker in markers) {
-                        for (length in 1 until marker.length) {
-                            if (pending.endsWith(marker.substring(0, length))) keep = maxOf(keep, length)
+            when (mode) {
+                Mode.UNKNOWN -> when {
+                    open != null && (close == null || open.first <= close.first) -> {
+                        if (open.first > 0) answerOut += pending.substring(0, open.first)
+                        pending = pending.substring(open.first + open.second.length)
+                        mode = Mode.THINKING
+                    }
+                    close != null -> {
+                        // Some templates omit the opening marker but still emit a closing marker.
+                        // Treat everything before the first closing marker as reasoning, not answer.
+                        if (close.first > 0) thinkingOut += pending.substring(0, close.first)
+                        pending = pending.substring(close.first + close.second.length)
+                        mode = Mode.ANSWERING
+                    }
+                    else -> {
+                        val partial = partialMarkerLength(pending, openingMarkers + closingMarkers)
+                        val emitLength = pending.length - partial
+                        if (emitLength > 0) {
+                            answerOut += pending.substring(0, emitLength)
+                            pending = pending.substring(emitLength)
                         }
+                        break
                     }
-                    val emitLength = pending.length - keep
-                    if (emitLength > 0) {
-                        val emitted = pending.substring(0, emitLength)
-                        if (mode == Mode.THINKING) thinkingOut += emitted else answerOut += emitted
-                        pending = pending.substring(emitLength)
+                }
+                Mode.THINKING -> {
+                    if (close != null) {
+                        if (close.first > 0) thinkingOut += pending.substring(0, close.first)
+                        pending = pending.substring(close.first + close.second.length)
+                        mode = Mode.ANSWERING
+                    } else {
+                        val partial = partialMarkerLength(pending, closingMarkers)
+                        val emitLength = pending.length - partial
+                        if (emitLength > 0) {
+                            thinkingOut += pending.substring(0, emitLength)
+                            pending = pending.substring(emitLength)
+                        }
+                        break
                     }
-                    break
+                }
+                Mode.ANSWERING -> {
+                    if (open != null) {
+                        if (open.first > 0) answerOut += pending.substring(0, open.first)
+                        pending = pending.substring(open.first + open.second.length)
+                        mode = Mode.THINKING
+                    } else {
+                        val partial = partialMarkerLength(pending, openingMarkers)
+                        val emitLength = pending.length - partial
+                        if (emitLength > 0) {
+                            answerOut += pending.substring(0, emitLength)
+                            pending = pending.substring(emitLength)
+                        }
+                        break
+                    }
                 }
             }
         }
         return Emission(thinkingOut, answerOut)
     }
 
+    private fun partialMarkerLength(text: String, markers: List<String>): Int {
+        var keep = 0
+        for (marker in markers) {
+            for (length in 1 until marker.length) {
+                if (text.endsWith(marker.substring(0, length))) keep = maxOf(keep, length)
+            }
+        }
+        return keep
+    }
+
     fun finish(): Emission {
         val rest = pending
         pending = ""
-        return if (mode == Mode.THINKING) Emission(thinking = rest) else Emission(answer = rest)
+        return when (mode) {
+            Mode.THINKING -> Emission(thinking = rest)
+            Mode.UNKNOWN, Mode.ANSWERING -> Emission(answer = rest)
+        }
     }
 }
 

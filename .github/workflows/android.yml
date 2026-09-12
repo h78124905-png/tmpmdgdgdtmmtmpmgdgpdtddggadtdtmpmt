@@ -31,30 +31,6 @@ jobs:
           yes | sdkmanager --licenses >/dev/null || true
           sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;27.2.12479018" "cmake;3.31.6"
 
-      - name: Install Vulkan build dependencies
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y glslc spirv-headers ninja-build
-
-          # Keep both Vulkan-Hpp and SPIR-V headers in the workspace so the
-          # Android cross compiler never needs to search the host /usr/include.
-          git clone --depth 1 https://github.com/KhronosGroup/Vulkan-Headers.git "$GITHUB_WORKSPACE/Vulkan-Headers"
-          cp -a /usr/include/spirv "$GITHUB_WORKSPACE/spirv"
-
-          test -f "$GITHUB_WORKSPACE/Vulkan-Headers/include/vulkan/vulkan.h"
-          test -f "$GITHUB_WORKSPACE/Vulkan-Headers/include/vulkan/vulkan.hpp"
-          test -f "$GITHUB_WORKSPACE/spirv/unified1/spirv.hpp"
-          test -f /usr/share/cmake/SPIRV-Headers/SPIRV-HeadersConfig.cmake
-          echo "Workspace Vulkan-Headers and SPIR-V dependencies verified"
-
-          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
-          NDK="$SDK_ROOT/ndk/27.2.12479018"
-          test -f "$NDK/shader-tools/linux-x86_64/glslc"
-          test -f "$NDK/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/26/libvulkan.so"
-          echo "Android NDK Vulkan dependencies verified"
-
       - name: Locate Android Build Tools
         shell: bash
         run: |

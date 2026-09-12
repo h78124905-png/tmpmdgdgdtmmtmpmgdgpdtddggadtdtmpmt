@@ -17,7 +17,6 @@ jobs:
         run: |
           python3 <<'PY'
           from pathlib import Path
-          import re
 
           p = Path('app/src/main/java/com/example/lfmmobile/MainActivity.kt')
           s = p.read_text()
@@ -52,11 +51,8 @@ jobs:
               val models = loadRecentModels(context).filterNot { it.uri == slot.uri }.toMutableList()
               models.add(0, RecentModel(slot.uri, slot.name, System.currentTimeMillis()))
               val a = JSONArray()
-              models.take(12).forEach { m ->
-                  a.put(JSONObject().put("uri", m.uri).put("name", m.name).put("lastUsed", m.lastUsed))
-              }
-              context.getSharedPreferences(MODEL_PREFS, Context.MODE_PRIVATE).edit()
-                  .putString(RECENT_MODELS_KEY, a.toString()).apply()
+              models.take(12).forEach { m -> a.put(JSONObject().put("uri", m.uri).put("name", m.name).put("lastUsed", m.lastUsed)) }
+              context.getSharedPreferences(MODEL_PREFS, Context.MODE_PRIVATE).edit().putString(RECENT_MODELS_KEY, a.toString()).apply()
           }
 
           private fun loadLastModel(context: Context, uriKey: String, nameKey: String): ModelSlot {
@@ -71,22 +67,15 @@ jobs:
           }
 
           private fun persistModelAccess(context: Context, uri: Uri) {
-              try {
-                  context.contentResolver.takePersistableUriPermission(
-                      uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
-                  )
-              } catch (_: SecurityException) { }
+              try { context.contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+              catch (_: SecurityException) { }
           }
 
           private fun hasPersistedAccess(context: Context, uriString: String): Boolean = try {
-              if (uriString.isBlank()) false else context.contentResolver.persistedUriPermissions.any {
-                  it.uri == Uri.parse(uriString) && it.isReadPermission
-              }
+              if (uriString.isBlank()) false else context.contentResolver.persistedUriPermissions.any { it.uri == Uri.parse(uriString) && it.isReadPermission }
           } catch (_: Exception) { false }
-          
           '''
-              if marker not in s:
-                  raise SystemExit('ModelSlot marker not found')
+              if marker not in s: raise SystemExit('ModelSlot marker not found')
               s = s.replace(marker, block, 1)
 
           old = '    var target by remember { mutableStateOf(ModelSlot()) }\n    var draft by remember { mutableStateOf(ModelSlot()) }\n'
@@ -94,50 +83,23 @@ jobs:
           if old not in s: raise SystemExit('state marker not found')
           s = s.replace(old, new, 1)
 
-          old = '''        val name = activity.displayName(uri) ?: uri.lastPathSegment?.substringAfterLast('/') ?: "model.gguf"
-        target = ModelSlot(uri.toString(), name)
-'''
-          new = '''        persistModelAccess(activity, uri)
-        val name = activity.displayName(uri) ?: uri.lastPathSegment?.substringAfterLast('/') ?: "model.gguf"
-        target = ModelSlot(uri.toString(), name)
-        recentModels = loadRecentModels(activity)
-'''
+          old = '        val name = activity.displayName(uri) ?: uri.lastPathSegment?.substringAfterLast(\'/\') ?: "model.gguf"\n        target = ModelSlot(uri.toString(), name)\n'
+          new = '        persistModelAccess(activity, uri)\n        val name = activity.displayName(uri) ?: uri.lastPathSegment?.substringAfterLast(\'/\') ?: "model.gguf"\n        target = ModelSlot(uri.toString(), name)\n        recentModels = loadRecentModels(activity)\n'
           if old not in s: raise SystemExit('target picker marker not found')
           s = s.replace(old, new, 1)
 
-          old = '''        val name = activity.displayName(uri) ?: uri.lastPathSegment?.substringAfterLast('/') ?: "dspark.gguf"
-        draft = ModelSlot(uri.toString(), name)
-'''
-          new = '''        persistModelAccess(activity, uri)
-        val name = activity.displayName(uri) ?: uri.lastPathSegment?.substringAfterLast('/') ?: "dspark.gguf"
-        draft = ModelSlot(uri.toString(), name)
-        recentModels = loadRecentModels(activity)
-'''
+          old = '        val name = activity.displayName(uri) ?: uri.lastPathSegment?.substringAfterLast(\'/\') ?: "dspark.gguf"\n        draft = ModelSlot(uri.toString(), name)\n'
+          new = '        persistModelAccess(activity, uri)\n        val name = activity.displayName(uri) ?: uri.lastPathSegment?.substringAfterLast(\'/\') ?: "dspark.gguf"\n        draft = ModelSlot(uri.toString(), name)\n        recentModels = loadRecentModels(activity)\n'
           if old not in s: raise SystemExit('draft picker marker not found')
           s = s.replace(old, new, 1)
 
-          old = '''                        val modelFile = File(modelDir, safeName)
-                        val tempFile = File(modelDir, "$safeName.part")
-'''
-          new = '''                        val modelFile = File(modelDir, safeName)
-                        if (modelFile.isFile && modelFile.length() > 0L) return modelFile
-                        val tempFile = File(modelDir, "$safeName.part")
-'''
+          old = '                        val modelFile = File(modelDir, safeName)\n                        val tempFile = File(modelDir, "$safeName.part")\n'
+          new = '                        val modelFile = File(modelDir, safeName)\n                        if (modelFile.isFile && modelFile.length() > 0L) return modelFile\n                        val tempFile = File(modelDir, "$safeName.part")\n'
           if old not in s: raise SystemExit('copy cache marker not found')
           s = s.replace(old, new, 1)
 
-          old = '''            loaded = result.first
-            loadError = result.second
-'''
-          new = '''            loaded = result.first
-            loadError = result.second
-            if (loaded) {
-                saveRecentModel(activity, target)
-                if (draftEnabled && draft.uri.isNotEmpty()) saveRecentModel(activity, draft)
-                saveLastModels(activity, target, draft)
-                recentModels = loadRecentModels(activity)
-            }
-'''
+          old = '            loaded = result.first\n            loadError = result.second\n'
+          new = '            loaded = result.first\n            loadError = result.second\n            if (loaded) {\n                saveRecentModel(activity, target)\n                if (draftEnabled && draft.uri.isNotEmpty()) saveRecentModel(activity, draft)\n                saveLastModels(activity, target, draft)\n                recentModels = loadRecentModels(activity)\n            }\n'
           if old not in s: raise SystemExit('load result marker not found')
           s = s.replace(old, new, 1)
 
@@ -177,14 +139,11 @@ jobs:
 
           p.write_text(s)
           PY
-
           grep -q 'RecentModel' app/src/main/java/com/example/lfmmobile/MainActivity.kt
           grep -q 'persistModelAccess' app/src/main/java/com/example/lfmmobile/MainActivity.kt
           grep -q 'File access unavailable' app/src/main/java/com/example/lfmmobile/MainActivity.kt
-
       - name: Build release APK
         run: ./gradlew :app:assembleRelease --no-daemon
-
       - name: Commit repaired source
         run: |
           git config user.name 'github-actions[bot]'
@@ -192,10 +151,11 @@ jobs:
           git add app/src/main/java/com/example/lfmmobile/MainActivity.kt
           git commit -m 'Restore persistent model library' || true
           git push
-
       - name: Remove temporary repair workflow
         if: success()
         run: |
           git rm .github/workflows/repair-model-library.yml
           git commit -m 'Remove one-shot model repair workflow'
           git push
+
+# v2 trigger

@@ -17,14 +17,6 @@ set(GGML_LLAMAFILE OFF CACHE BOOL "" FORCE)
 set(GGML_NATIVE OFF CACHE BOOL "" FORCE)
 set(GGML_LTO ON CACHE BOOL "" FORCE)
 
-# CPU-only build on Android. No ggml GPU backend is enabled.
-set(GGML_CUDA OFF CACHE BOOL "" FORCE)
-set(GGML_METAL OFF CACHE BOOL "" FORCE)
-set(GGML_OPENCL OFF CACHE BOOL "" FORCE)
-set(GGML_SYCL OFF CACHE BOOL "" FORCE)
-set(GGML_HIP OFF CACHE BOOL "" FORCE)
-set(GGML_RPC OFF CACHE BOOL "" FORCE)
-
 FetchContent_Declare(
     llama_cpp
     GIT_REPOSITORY https://github.com/ggml-org/llama.cpp.git

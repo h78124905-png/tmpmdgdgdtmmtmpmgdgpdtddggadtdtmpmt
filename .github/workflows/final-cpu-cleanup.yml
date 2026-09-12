@@ -1,0 +1,51 @@
+name: Final CPU-only cleanup
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: write
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply CPU-only source cleanup
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          p = Path('app/src/main/cpp/native-lib.cpp')
+          s = p.read_text()
+          s = s.replace('    std::string gpu_name = "CPU";\n', '')
+          s = s.replace('    g_engine.gpu_name = "CPU";\n', '')
+          s = re.sub(r'void emit_stats\(JNIEnv \* env, jobject callback, jmethodID on_stats, double tok_per_sec, int64_t elapsed_ms, int context_used, int context_size\) \{.*?\n\}\n', '''void emit_stats(JNIEnv * env, jobject callback, jmethodID on_stats, double tok_per_sec, int64_t elapsed_ms, int context_used, int context_size) {\n    if (!callback || !on_stats) return;\n    env->CallVoidMethod(callback, on_stats, tok_per_sec, static_cast<jlong>(elapsed_ms), static_cast<jint>(context_used), static_cast<jint>(context_size));\n    if (env->ExceptionCheck()) env->ExceptionClear();\n}\n''', s, flags=re.S)
+          s = s.replace('on_stats = env->GetMethodID(callback_class, "onStats", "(DJLjava/lang/String;II)V");', 'on_stats = env->GetMethodID(callback_class, "onStats", "(DJII)V");')
+          s = s.replace('LOGI("[load] model load completed successfully; backend=%s; dspark=%s", g_engine.gpu_name.c_str(), g_engine.speculative ? "on" : "off");', 'LOGI("[load] model load completed successfully; CPU-only; dspark=%s", g_engine.speculative ? "on" : "off");')
+          p.write_text(s)
+
+          q = Path('app/src/main/java/com/example/lfmmobile/LlamaEngine.kt')
+          k = q.read_text()
+          k = k.replace('onStats: (tokPerSec: Double, elapsedMs: Long, gpu: String, contextUsed: Int, contextSize: Int) -> Unit = { _, _, _, _, _ -> }', 'onStats: (tokPerSec: Double, elapsedMs: Long, contextUsed: Int, contextSize: Int) -> Unit = { _, _, _, _ -> }')
+          k = k.replace('fun onStats(tokPerSec: Double, elapsedMs: Long, gpu: String, contextUsed: Int, contextSize: Int) {\n                emitStats(tokPerSec, elapsedMs, gpu, contextUsed, contextSize)\n            }', 'fun onStats(tokPerSec: Double, elapsedMs: Long, contextUsed: Int, contextSize: Int) {\n                emitStats(tokPerSec, elapsedMs, contextUsed, contextSize)\n            }')
+          q.write_text(k)
+          PY
+      - name: Verify CPU-only sources
+        run: |
+          set -e
+          ! grep -RniE 'GGML_VULKAN|ggml-vulkan|Vulkan|vulkan|gpu_name|n_gpu_layers[[:space:]]*=[[:space:]]*-1|detect_gpu_backend|ggml_backend_dev_|onStats\([^)]*String' app/src/main/cpp app/src/main/java/com/example/lfmmobile
+          grep -n 'n_gpu_layers = 0' app/src/main/cpp/native-lib.cpp
+          grep -n 'CPU-only' app/src/main/cpp/native-lib.cpp
+      - name: Commit source cleanup
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app/src/main/cpp/native-lib.cpp app/src/main/java/com/example/lfmmobile/LlamaEngine.kt
+          git diff --cached --quiet || git commit -m 'Remove remaining GPU code from native and Kotlin layers'
+          git push
+      - name: Remove cleanup workflow
+        run: |
+          rm .github/workflows/final-cpu-cleanup.yml
+          git add .github/workflows/final-cpu-cleanup.yml
+          git commit -m 'Remove temporary CPU cleanup workflow'
+          git push

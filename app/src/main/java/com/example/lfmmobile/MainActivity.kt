@@ -1,5 +1,7 @@
 package com.example.lfmmobile
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.net.Uri
 import android.os.Bundle
@@ -40,7 +42,6 @@ private data class Conversation(val id: String, val title: String, val messages:
 private data class GenerationStats(
     val tokPerSec: Double = 0.0,
     val elapsedMs: Long = 0L,
-    val gpu: String = "CPU",
     val contextUsed: Int = 0,
     val contextSize: Int = 0
 )
@@ -241,6 +242,7 @@ private fun ChatApp() {
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     var target by remember { mutableStateOf(ModelSlot()) }
     var draft by remember { mutableStateOf(ModelSlot()) }
+    var draftEnabled by remember { mutableStateOf(false) }
     var messages by remember { mutableStateOf(listOf<Message>()) }
     var conversations by remember { mutableStateOf(loadConversations(activity)) }
     var currentChatId by remember { mutableStateOf(UUID.randomUUID().toString()) }
@@ -266,6 +268,7 @@ private fun ChatApp() {
         uri ?: return@rememberLauncherForActivityResult
         val name = activity.displayName(uri) ?: uri.lastPathSegment?.substringAfterLast('/') ?: "dspark.gguf"
         draft = ModelSlot(uri.toString(), name)
+        draftEnabled = true
         loaded = false
         loadError = ""
     }
@@ -326,7 +329,7 @@ private fun ChatApp() {
                         return modelFile
                     }
                     val targetFile = copyModel(target, "model.gguf")
-                    val draftFile = if (draft.uri.isNotEmpty()) copyModel(draft, "dspark.gguf") else null
+                    val draftFile = if (draftEnabled && draft.uri.isNotEmpty()) copyModel(draft, "dspark.gguf") else null
                     loadError = if (draftFile != null) "Loading Target + DSpark…" else "Loading GGUF…"
                     val ok = if (draftFile != null) {
                         engine.loadModelFromPath(targetFile.absolutePath, draftFile.absolutePath, contextSize)
@@ -381,8 +384,8 @@ private fun ChatApp() {
                             conversation,
                             maxTokens,
                             onToken = { token -> channel.trySend(StreamEvent.Token(token)) },
-                            onStats = { tokPerSec, elapsedMs, gpu, contextUsed, contextMax ->
-                                channel.trySend(StreamEvent.Stats(GenerationStats(tokPerSec, elapsedMs, gpu, contextUsed, contextMax)))
+                            onStats = { tokPerSec, elapsedMs, contextUsed, contextMax ->
+                                channel.trySend(StreamEvent.Stats(GenerationStats(tokPerSec, elapsedMs, contextUsed, contextMax)))
                             }
                         )
                     } finally { channel.close() }
@@ -477,7 +480,7 @@ private fun ChatApp() {
                             verticalArrangement = Arrangement.spacedBy(14.dp),
                             contentPadding = PaddingValues(vertical = 18.dp)
                         ) {
-                            if (messages.isEmpty()) item { Welcome(target, draft, loaded) }
+                            if (messages.isEmpty()) item { Welcome(target, draft, draftEnabled, loaded) }
                             items(messages) { MessageBubble(it) }
                             if (searching) item { Text("Searching the web…", Modifier.padding(start = 12.dp)) }
                             if (generating) item { GenerationStatus(generationStats) }
@@ -504,11 +507,18 @@ private fun ChatApp() {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     ModelCard("Target model", target) { pickerTarget.launch(arrayOf("application/octet-stream", "application/x-gguf", "*/*")) }
                     ModelCard("DSpark draft (optional)", draft) { pickerDraft.launch(arrayOf("application/octet-stream", "application/x-gguf", "*/*")) }
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Draft acceleration", fontWeight = FontWeight.SemiBold)
+                            Text(if (draft.uri.isEmpty()) "Select a DSpark draft model first" else if (draftEnabled) "Enabled" else "Disabled", style = MaterialTheme.typography.bodySmall)
+                        }
+                        Switch(checked = draftEnabled, onCheckedChange = { draftEnabled = it; loaded = false }, enabled = draft.uri.isNotEmpty())
+                    }
                     HorizontalDivider()
                     OutlinedTextField(contextSize.toString(), { it.toIntOrNull()?.coerceIn(512, 131072)?.let { v -> contextSize = v; loaded = false } }, label = { Text("Context size") }, singleLine = true)
                     OutlinedTextField(maxTokens.toString(), { it.toIntOrNull()?.coerceIn(1, 8192)?.let { v -> maxTokens = v } }, label = { Text("Max tokens") }, singleLine = true)
                     if (loadError.isNotBlank()) Text(loadError, color = MaterialTheme.colorScheme.error)
-                    Button(onClick = { loadModel() }, enabled = target.uri.isNotEmpty()) { Text(if (draft.uri.isNotEmpty()) "Load Target + DSpark" else "Load model") }
+                    Button(onClick = { loadModel() }, enabled = target.uri.isNotEmpty()) { Text(if (draftEnabled && draft.uri.isNotEmpty()) "Load Target + DSpark" else "Load model") }
                     Text("Dark mode only • llama.cpp", style = MaterialTheme.typography.bodySmall)
                 }
             },
@@ -531,8 +541,6 @@ private fun GenerationStatus(stats: GenerationStats) {
             Spacer(Modifier.width(10.dp))
             Text(String.format("%.1fs", stats.elapsedMs / 1000.0))
             Spacer(Modifier.width(10.dp))
-            Text(stats.gpu, maxLines = 1)
-            Spacer(Modifier.width(10.dp))
             Text("ctx ${stats.contextUsed}/${stats.contextSize}")
         }
     }
@@ -551,16 +559,21 @@ private fun ModelCard(title: String, slot: ModelSlot, onPick: () -> Unit) {
 }
 
 @Composable
-private fun Welcome(target: ModelSlot, draft: ModelSlot, loaded: Boolean) {
+private fun Welcome(target: ModelSlot, draft: ModelSlot, draftEnabled: Boolean, loaded: Boolean) {
     Column(Modifier.fillMaxWidth().padding(top = 70.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Text("Local AI", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Medium)
         Text(if (loaded) target.name else "Choose a Target model in Models", style = MaterialTheme.typography.bodyMedium)
-        if (loaded && draft.uri.isNotEmpty()) Text("DSpark enabled", style = MaterialTheme.typography.bodySmall)
+        if (loaded && draftEnabled && draft.uri.isNotEmpty()) Text("DSpark enabled", style = MaterialTheme.typography.bodySmall)
     }
 }
 
 @Composable
 private fun MessageBubble(message: Message) {
+    val clipboard = LocalContext.current.getSystemService(ClipboardManager::class.java)
+    fun copy(text: String) {
+        clipboard?.setPrimaryClip(ClipData.newPlainText("Lfm Mobile", text))
+    }
+
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(7.dp)) {
         if (!message.user && message.thinking.isNotEmpty()) {
             Surface(
@@ -569,7 +582,11 @@ private fun MessageBubble(message: Message) {
                 color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
             ) {
                 Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
-                    Text("Thinking", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Text("Thinking", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+                        Spacer(Modifier.weight(1f))
+                        TextButton(onClick = { copy(message.thinking) }) { Text("コピー") }
+                    }
                     Text(message.thinking, Modifier.padding(top = 4.dp), style = MaterialTheme.typography.bodyMedium)
                 }
             }
@@ -582,6 +599,11 @@ private fun MessageBubble(message: Message) {
                 ) {
                     Text(message.text, Modifier.padding(horizontal = 16.dp, vertical = 11.dp), style = MaterialTheme.typography.bodyLarge)
                 }
+            }
+        }
+        if (!message.user && message.text.isNotEmpty()) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Start) {
+                TextButton(onClick = { copy(message.text) }) { Text("回答をコピー") }
             }
         }
         if (!message.user && message.sources.isNotEmpty()) {

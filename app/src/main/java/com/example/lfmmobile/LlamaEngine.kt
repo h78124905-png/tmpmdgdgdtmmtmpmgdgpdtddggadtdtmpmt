@@ -26,7 +26,7 @@ class LlamaEngine : AutoCloseable {
         prompt: String,
         maxTokens: Int = 128,
         onToken: (String) -> Unit,
-        onStats: (tokPerSec: Double, elapsedMs: Long, gpu: String, contextUsed: Int, contextSize: Int) -> Unit = { _, _, _, _, _ -> }
+        onStats: (tokPerSec: Double, elapsedMs: Long, contextUsed: Int, contextSize: Int) -> Unit = { _, _, _, _ -> }
     ): String {
         val emitToken = onToken
         val emitStats = onStats
@@ -35,8 +35,8 @@ class LlamaEngine : AutoCloseable {
             fun onToken(text: String) { emitToken(text) }
 
             @Suppress("unused")
-            fun onStats(tokPerSec: Double, elapsedMs: Long, gpu: String, contextUsed: Int, contextSize: Int) {
-                emitStats(tokPerSec, elapsedMs, gpu, contextUsed, contextSize)
+            fun onStats(tokPerSec: Double, elapsedMs: Long, contextUsed: Int, contextSize: Int) {
+                emitStats(tokPerSec, elapsedMs, contextUsed, contextSize)
             }
         }
         nativeGenerateStream(prompt, maxTokens, callback)

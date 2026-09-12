@@ -27,7 +27,6 @@ struct Engine {
     common_speculative_init_result_ptr draft_init;
     common_speculative_ptr speculative;
     std::string last_error;
-    std::string gpu_name = "CPU";
     bool backend_initialized = false;
     llama_tokens cached_prompt;
 };
@@ -48,7 +47,6 @@ void free_engine() {
     g_engine.model = nullptr;
     g_engine.context = nullptr;
     g_engine.vocab = nullptr;
-    g_engine.gpu_name = "CPU";
     g_engine.cached_prompt.clear();
 }
 
@@ -156,9 +154,7 @@ void emit_final_utf8(JNIEnv * env, jobject callback, jmethodID on_token, std::st
 
 void emit_stats(JNIEnv * env, jobject callback, jmethodID on_stats, double tok_per_sec, int64_t elapsed_ms, int context_used, int context_size) {
     if (!callback || !on_stats) return;
-    jstring jgpu = utf8_to_jstring(env, g_engine.gpu_name);
-    env->CallVoidMethod(callback, on_stats, tok_per_sec, static_cast<jlong>(elapsed_ms), jgpu, static_cast<jint>(context_used), static_cast<jint>(context_size));
-    env->DeleteLocalRef(jgpu);
+    env->CallVoidMethod(callback, on_stats, tok_per_sec, static_cast<jlong>(elapsed_ms), static_cast<jint>(context_used), static_cast<jint>(context_size));
     if (env->ExceptionCheck()) env->ExceptionClear();
 }
 
@@ -224,7 +220,7 @@ std::string generate_impl(JNIEnv * env, const std::string & prompt_text, int max
     if (callback) {
         jclass callback_class = env->GetObjectClass(callback);
         on_token = env->GetMethodID(callback_class, "onToken", "(Ljava/lang/String;)V");
-        on_stats = env->GetMethodID(callback_class, "onStats", "(DJLjava/lang/String;II)V");
+        on_stats = env->GetMethodID(callback_class, "onStats", "(DJII)V");
         env->DeleteLocalRef(callback_class);
         if (!on_token) { if (env->ExceptionCheck()) env->ExceptionClear(); return "[stream callback method not found]"; }
         if (!on_stats && env->ExceptionCheck()) env->ExceptionClear();
@@ -412,7 +408,7 @@ Java_com_example_lfmmobile_LlamaEngine_nativeLoadModelFromPath(JNIEnv * env, job
             if (!g_engine.speculative) { free_engine(); set_error("stage=dspark_spec; common_speculative_init returned null"); return JNI_FALSE; }
             LOGI("[spec] DSpark initialized successfully");
         }
-        LOGI("[load] model load completed successfully; backend=%s; dspark=%s", g_engine.gpu_name.c_str(), g_engine.speculative ? "on" : "off");
+        LOGI("[load] model load completed successfully; CPU-only; dspark=%s", g_engine.speculative ? "on" : "off");
         return JNI_TRUE;
     } catch (const std::exception & e) { set_error(std::string("stage=exception; ") + e.what()); free_engine(); return JNI_FALSE; }
     catch (...) { set_error("stage=exception; unknown native exception"); free_engine(); return JNI_FALSE; }

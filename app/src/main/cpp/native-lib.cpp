@@ -13,7 +13,6 @@
 #include "sampling.h"
 #include "chat.h"
 #include "speculative.h"
-#include "ggml-backend.h"
 
 #define LOG_TAG "LfmMobile"
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
@@ -168,21 +167,6 @@ bool load_progress(float progress, void *) {
     const int percent = std::clamp(static_cast<int>(progress * 100.0f), 0, 100);
     if (percent == 100 || percent >= last_percent + 10) { last_percent = percent; LOGI("[load] llama_model_load_from_file progress=%d%%", percent); }
     return true;
-}
-
-void detect_gpu_backend() {
-    g_engine.gpu_name = "CPU";
-    for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
-        ggml_backend_dev_t dev = ggml_backend_dev_get(i);
-        const char * name = ggml_backend_dev_name(dev);
-        const char * desc = ggml_backend_dev_description(dev);
-        if (name && (std::string(name).find("Vulkan") != std::string::npos || std::string(name).find("vulkan") != std::string::npos)) {
-            g_engine.gpu_name = desc && *desc ? std::string("Vulkan · ") + desc : std::string("Vulkan · ") + name;
-            LOGI("[backend] Vulkan GPU backend available: %s", g_engine.gpu_name.c_str());
-            return;
-        }
-    }
-    LOGI("[backend] Vulkan device not registered; CPU fallback");
 }
 
 std::vector<common_chat_msg> build_messages(const std::string & prompt_text) {
@@ -393,11 +377,11 @@ Java_com_example_lfmmobile_LlamaEngine_nativeLoadModelFromPath(JNIEnv * env, job
     if (path.empty()) { set_error("stage=path; model path is empty"); return JNI_FALSE; }
     free_engine();
     g_engine.last_error.clear();
-    if (!g_engine.backend_initialized) { llama_backend_init(); g_engine.backend_initialized = true; detect_gpu_backend(); }
+    if (!g_engine.backend_initialized) { llama_backend_init(); g_engine.backend_initialized = true; }
     try {
         llama_model_params model_params = llama_model_default_params();
-        model_params.n_gpu_layers = -1; model_params.progress_callback = load_progress; model_params.progress_callback_user_data = nullptr;
-        LOGI("[load] model load starting (Vulkan GPU offload requested)");
+        model_params.n_gpu_layers = 0; model_params.progress_callback = load_progress; model_params.progress_callback_user_data = nullptr;
+        LOGI("[load] model load starting (CPU-only)");
         llama_model * model = llama_model_load_from_file(path.c_str(), model_params);
         if (!model) { set_error("stage=model_load; llama_model_load_from_file returned null"); return JNI_FALSE; }
         const llama_vocab * vocab = llama_model_get_vocab(model);
@@ -420,7 +404,7 @@ Java_com_example_lfmmobile_LlamaEngine_nativeLoadModelFromPath(JNIEnv * env, job
             common_params spec_params;
             spec_params.model.path = draft_path; spec_params.n_ctx = context_params.n_ctx; spec_params.n_batch = context_params.n_batch; spec_params.n_ubatch = context_params.n_ubatch;
             spec_params.n_parallel = 1; spec_params.n_sequences = 1; spec_params.speculative.types = { COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK };
-            spec_params.speculative.draft.mparams.path = draft_path; spec_params.speculative.draft.n_max = 10; spec_params.speculative.draft.n_min = 0; spec_params.speculative.draft.n_gpu_layers = -1; spec_params.speculative.draft.ctx_tgt = context;
+            spec_params.speculative.draft.mparams.path = draft_path; spec_params.speculative.draft.n_max = 10; spec_params.speculative.draft.n_min = 0; spec_params.speculative.draft.n_gpu_layers = 0; spec_params.speculative.draft.ctx_tgt = context;
             g_engine.draft_init = common_speculative_init_from_params(spec_params, model, context);
             if (!g_engine.draft_init || !g_engine.draft_init->model() || !g_engine.draft_init->context()) { free_engine(); set_error("stage=dspark_init; could not initialize the selected DSpark draft. Check that it matches the target model."); return JNI_FALSE; }
             spec_params.speculative.draft.ctx_dft = g_engine.draft_init->context();

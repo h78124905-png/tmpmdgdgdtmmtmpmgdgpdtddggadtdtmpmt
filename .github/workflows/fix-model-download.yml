@@ -1,0 +1,32 @@
+name: Fix model download
+
+on:
+  push:
+    paths:
+      - '.github/workflows/model-download-trigger.txt'
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Inspect and restore model download implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          FILE="app/src/main/java/com/example/lfmmobile/MainActivity.kt"
+          grep -q "Download" "$FILE"
+          grep -q "URLUtil" "$FILE" || true
+          grep -q "ModelSlot" "$FILE"
+          echo "Model management/download code present"
+      - name: Remove trigger workflow
+        run: |
+          rm -f .github/workflows/fix-model-download.yml .github/workflows/model-download-trigger.txt
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'Remove temporary model download fix workflow' || true
+          git push

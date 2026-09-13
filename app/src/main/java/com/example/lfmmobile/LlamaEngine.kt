@@ -7,7 +7,7 @@ class LlamaEngine : AutoCloseable {
     private external fun nativeGetLastError(): String
     private external fun nativeGenerate(prompt: String, maxTokens: Int): String
     private external fun nativeGenerateStream(prompt: String, maxTokens: Int, callback: Any)
-    private external fun nativeGenerateToolStep(messagesJson: String, toolsJson: String, maxTokens: Int): String
+    private external fun nativeGenerateToolStep(messagesJson: String, toolsJson: String, maxTokens: Int, callback: Any): String
     private external fun nativeUnloadModel()
 
     fun loadModelFromPath(modelPath: String, contextSize: Int = 4096): Boolean = nativeLoadModelFromPath(modelPath, "", contextSize)
@@ -23,8 +23,12 @@ class LlamaEngine : AutoCloseable {
         nativeGenerateStream(prompt, maxTokens, callback); return ""
     }
 
-    fun generateToolStep(messagesJson: String, toolsJson: String, maxTokens: Int = 384): String =
-        nativeGenerateToolStep(messagesJson, toolsJson, maxTokens)
+    fun generateToolStep(messagesJson: String, toolsJson: String, maxTokens: Int = 384, onProgress: (String, Long) -> Unit = { _, _ -> }): String {
+        val callback = object {
+            @Suppress("unused") fun onProgress(stage: String, elapsedMs: Long) { onProgress(stage, elapsedMs) }
+        }
+        return nativeGenerateToolStep(messagesJson, toolsJson, maxTokens, callback)
+    }
 
     override fun close() { nativeUnloadModel() }
 }

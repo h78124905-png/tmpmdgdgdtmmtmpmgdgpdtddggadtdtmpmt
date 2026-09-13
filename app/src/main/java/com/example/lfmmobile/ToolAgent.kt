@@ -41,7 +41,11 @@ class ToolAgent(
             .put("type", "integer").put("minimum", min).put("maximum", max)
     }
 
-    suspend fun run(initialMessages: JSONArray, maxTokens: Int): AgentResult = withContext(Dispatchers.Default) {
+    suspend fun run(
+        initialMessages: JSONArray,
+        maxTokens: Int,
+        onProgress: (String, Long) -> Unit = { _, _ -> }
+    ): AgentResult = withContext(Dispatchers.Default) {
         val messages = initialMessages
         val tools = toolDefinitions()
         val sources = mutableListOf<SearchResult>()
@@ -51,12 +55,24 @@ class ToolAgent(
         var iterations = 0
         var lastTiming = ""
 
+        fun progress(stage: String, elapsedMs: Long) {
+            ToolProgress.update(stage, elapsedMs)
+            onProgress(stage, elapsedMs)
+        }
+
+        ToolProgress.reset()
         while (iterations <= MAX_TOOL_CALLS) {
             iterations++
             val raw = try {
-                engine.generateToolStep(messages.toString(), tools.toString(), maxTokens.coerceAtMost(1024))
+                engine.generateToolStep(
+                    messages.toString(),
+                    tools.toString(),
+                    maxTokens.coerceAtMost(1024),
+                    ::progress
+                )
             } catch (e: Exception) {
                 Log.e(TAG, "native tool-step failed", e)
+                ToolProgress.update("error", 0L)
                 return@withContext AgentResult("", thinking, sources, e.message ?: e::class.java.simpleName, lastTiming)
             }
             val step = try {

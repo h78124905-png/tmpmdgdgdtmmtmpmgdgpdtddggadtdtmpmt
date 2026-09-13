@@ -125,8 +125,8 @@ Java_com_example_lfmmobile_LlamaEngine_nativeGenerateToolStep(JNIEnv * env, jobj
         progress("tokenize_tool_prompt"); const llama_tokens prompt_tokens=common_tokenize(g_engine.context,chat.prompt,true,true); timing.tokenize_ms=timing.mark();
         const uint32_t n_ctx=llama_n_ctx(g_engine.context); if(prompt_tokens.empty()) return tool_result(env,make_error("tool prompt tokenization failed")); if(prompt_tokens.size()+1>=n_ctx) return tool_result(env,make_error("prompt exceeds context"));
 
-        // No grammar is installed on the generic tool path. Tool-call syntax is emitted
-        // by the model/chat template and parsed after generation.
+        // Tool calls use the model's chat template for the wire format, but generation
+        // itself must share the same sampler/prefill invariants as normal generation.
         progress("init_tool_sampler");
         common_params_sampling sampling;
         sampling.temp=.2f; sampling.top_k=40; sampling.top_p=.95f;
@@ -137,10 +137,32 @@ Java_com_example_lfmmobile_LlamaEngine_nativeGenerateToolStep(JNIEnv * env, jobj
         timing.sampler_ms=timing.mark();
         if(!sampler) return tool_result(env,make_error("tool sampler init failed"));
 
-        progress("clear_tool_kv"); llama_memory_clear(llama_get_memory(g_engine.context),false); timing.kv_clear_ms=timing.mark();
-        const uint32_t n_batch=std::max<uint32_t>(1,llama_n_batch(g_engine.context)); llama_batch batch=llama_batch_init(std::min<uint32_t>(n_batch,(uint32_t)prompt_tokens.size()),0,1);
+        progress("clear_tool_kv");
+        llama_memory_clear(llama_get_memory(g_engine.context),false);
+        if (g_engine.draft_init && g_engine.draft_init->context()) {
+            llama_memory_clear(llama_get_memory(g_engine.draft_init->context()), false);
+        }
+        timing.kv_clear_ms=timing.mark();
+
+        if (g_engine.speculative) {
+            common_speculative_begin(g_engine.speculative.get(), 0, prompt_tokens);
+        }
+
+        const uint32_t n_batch=std::max<uint32_t>(1,llama_n_batch(g_engine.context));
+        llama_batch batch=llama_batch_init(std::min<uint32_t>(n_batch,(uint32_t)prompt_tokens.size()),0,1);
         progress("prefill_tool_prompt");
-        for(size_t i=0;i<prompt_tokens.size();++i){common_batch_add(batch,prompt_tokens[i],(llama_pos)i,{0},i+1==prompt_tokens.size()); if(batch.n_tokens==(int)n_batch||i+1==prompt_tokens.size()){if(llama_decode(g_engine.context,batch)!=0){llama_batch_free(batch);return tool_result(env,make_error("tool prompt decode failed"));}common_batch_clear(batch);}}
+        for(size_t i=0;i<prompt_tokens.size();++i){
+            common_batch_add(batch,prompt_tokens[i],(llama_pos)i,{0},i+1==prompt_tokens.size());
+            if(batch.n_tokens==(int)n_batch||i+1==prompt_tokens.size()){
+                if(llama_decode(g_engine.context,batch)!=0){llama_batch_free(batch);return tool_result(env,make_error("tool prompt decode failed"));}
+                if (g_engine.speculative && !common_speculative_process(g_engine.speculative.get(), batch)) {
+                    llama_batch_free(batch);
+                    return tool_result(env,make_error("speculative tool prompt process failed"));
+                }
+                common_batch_clear(batch);
+                report_progress(env,callback,"prefill_tool_prompt",timing.total_ms());
+            }
+        }
         llama_batch_free(batch); timing.prefill_ms=timing.mark(); report_progress(env,callback,"prefill_complete",timing.total_ms());
 
         progress("sample_first_tool_token"); llama_token next=common_sampler_sample(sampler.get(),g_engine.context,(int)prompt_tokens.size()-1); common_sampler_accept(sampler.get(),next,true); timing.first_sample_ms=timing.mark();

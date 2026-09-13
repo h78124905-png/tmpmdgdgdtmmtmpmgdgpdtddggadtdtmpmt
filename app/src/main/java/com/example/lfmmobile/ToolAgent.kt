@@ -55,24 +55,18 @@ class ToolAgent(
         var iterations = 0
         var lastTiming = ""
 
-        fun progress(stage: String, elapsedMs: Long) {
-            ToolProgress.update(stage, elapsedMs)
-            onProgress(stage, elapsedMs)
-        }
-
-        ToolProgress.reset()
         while (iterations <= MAX_TOOL_CALLS) {
             iterations++
             val raw = try {
+                onProgress("tool_step_start", 0L)
                 engine.generateToolStep(
                     messages.toString(),
                     tools.toString(),
-                    maxTokens.coerceAtMost(1024),
-                    ::progress
+                    maxTokens.coerceAtMost(256),
+                    onProgress
                 )
             } catch (e: Exception) {
                 Log.e(TAG, "native tool-step failed", e)
-                ToolProgress.update("error", 0L)
                 return@withContext AgentResult("", thinking, sources, e.message ?: e::class.java.simpleName, lastTiming)
             }
             val step = try {

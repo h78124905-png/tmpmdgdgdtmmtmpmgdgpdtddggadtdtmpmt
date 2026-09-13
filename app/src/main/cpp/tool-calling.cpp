@@ -125,14 +125,11 @@ Java_com_example_lfmmobile_LlamaEngine_nativeGenerateToolStep(JNIEnv * env, jobj
         progress("tokenize_tool_prompt"); const llama_tokens prompt_tokens=common_tokenize(g_engine.context,chat.prompt,true,true); timing.tokenize_ms=timing.mark();
         const uint32_t n_ctx=llama_n_ctx(g_engine.context); if(prompt_tokens.empty()) return tool_result(env,make_error("tool prompt tokenization failed")); if(prompt_tokens.size()+1>=n_ctx) return tool_result(env,make_error("prompt exceeds context"));
 
-        // Tool grammar initialization was the previous hard failure point. LFM2.5 emits
-        // its native tool-call markers itself, so do not install a grammar here. Parsing
-        // is still performed by common_chat_parse() below. This also keeps this path
-        // compatible with models whose chat template does not expose a tool grammar.
+        // No grammar is installed on the generic tool path. Tool-call syntax is emitted
+        // by the model/chat template and parsed after generation.
         progress("init_tool_sampler");
         common_params_sampling sampling;
         sampling.temp=.2f; sampling.top_k=40; sampling.top_p=.95f;
-        sampling.grammar=common_grammar();
         sampling.generation_prompt.clear();
         progress("init_tool_sampler_create");
         common_sampler_ptr sampler;

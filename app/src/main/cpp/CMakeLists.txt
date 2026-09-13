@@ -27,9 +27,11 @@ find_program(LFM_GLSLC_EXECUTABLE glslc)
 if (Vulkan_FOUND AND LFM_GLSLC_EXECUTABLE)
     set(GGML_VULKAN ON CACHE BOOL "" FORCE)
     set(LFM_VULKAN_AVAILABLE ON)
+    message(STATUS "LFM: Vulkan backend ENABLED; glslc=${LFM_GLSLC_EXECUTABLE}")
 else()
     set(GGML_VULKAN OFF CACHE BOOL "" FORCE)
     set(LFM_VULKAN_AVAILABLE OFF)
+    message(STATUS "LFM: Vulkan backend DISABLED; Vulkan_FOUND=${Vulkan_FOUND} glslc=${LFM_GLSLC_EXECUTABLE}")
 endif()
 
 # Explicitly disable unsupported GPU / accelerator backends for this Android target.

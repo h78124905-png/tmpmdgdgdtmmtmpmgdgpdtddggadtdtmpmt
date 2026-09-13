@@ -12,7 +12,7 @@ data class ToolCallTrace(val name: String, val arguments: String, val id: String
 class ToolAgent(private val engine: LlamaEngine, private val webSearch: WebSearchService = WebSearchService()) {
     companion object {
         private const val TAG = "ToolAgent"
-        private const val MAX_TOOL_CALLS = 3
+        private const val MAX_TOOL_CALLS = 2
         private const val MAX_HISTORY_MESSAGES = 6
         private const val MAX_MESSAGE_CHARS = 2400
         fun toolDefinitions(): JSONArray = JSONArray().apply {

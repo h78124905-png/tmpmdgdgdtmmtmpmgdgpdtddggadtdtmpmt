@@ -94,6 +94,13 @@ struct ToolTiming {
                ",\"parse_result_ms\":" + std::to_string(parse_result_ms) + "}";
     }
 };
+
+std::string add_timing(const std::string & result, const ToolTiming & timing) {
+    if (!result.empty() && result.back() == '}') {
+        return result.substr(0, result.size() - 1) + ",\"timing\":" + timing.json() + "}";
+    }
+    return result;
+}
 }
 
 extern "C" JNIEXPORT jstring JNICALL
@@ -274,7 +281,7 @@ Java_com_example_lfmmobile_LlamaEngine_nativeGenerateToolStep(JNIEnv * env, jobj
              timing.generation_ms, timing.parse_result_ms, prompt_tokens.size(), generated.size());
         stage = "build_result";
         const std::string result = parsed.tool_calls.empty() ? make_final(parsed) : make_tools(parsed);
-        return tool_result(env, result + ",\"timing\":" + timing.json().substr(1));
+        return tool_result(env, add_timing(result, timing));
     } catch (const std::exception & e) {
         const std::string detail = e.what() && *e.what() ? e.what() : "<empty what()>";
         const std::string message = "native tool-step exception at " + stage + ": " + detail;

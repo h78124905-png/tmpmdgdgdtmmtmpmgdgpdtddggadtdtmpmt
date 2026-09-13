@@ -28,6 +28,7 @@ struct Engine {
     std::string last_error;
     std::mutex mutex;
     bool backend_initialized = false;
+    int gpu_layers = 0;
 };
 Engine g_engine;
 
@@ -254,7 +255,7 @@ Java_com_example_lfmmobile_LlamaEngine_nativeLoadModelFromPath(JNIEnv *env, jobj
         cp.n_threads_batch = threads;
         llama_context *ctx = llama_init_from_model(model, cp);
         if (!ctx) { llama_model_free(model); set_error("llama_init_from_model failed"); return JNI_FALSE; }
-        g_engine.model = model; g_engine.context = ctx; g_engine.vocab = llama_model_get_vocab(model); g_engine.last_error.clear();
+        g_engine.model = model; g_engine.context = ctx; g_engine.vocab = llama_model_get_vocab(model); g_engine.gpu_layers = mp.n_gpu_layers; g_engine.last_error.clear();
         LOGI("engine ready: backend=%s threads=%d context=%d", LFM_VULKAN_AVAILABLE ? "Vulkan/CPU fallback" : "CPU", threads, cp.n_ctx);
         return JNI_TRUE;
     } catch (const std::exception &e) { set_error(std::string("load exception: ") + e.what()); return JNI_FALSE; }
@@ -270,8 +271,9 @@ Java_com_example_lfmmobile_LlamaEngine_nativeGetLastError(JNIEnv *env, jobject) 
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_example_lfmmobile_LlamaEngine_nativeGetBackendInfo(JNIEnv *env, jobject) {
     std::lock_guard<std::mutex> lock(g_engine.mutex);
-    if (!LFM_VULKAN_AVAILABLE) return utf8_to_jstring(env, "CPU backend / DSpark target-only");
-    return utf8_to_jstring(env, llama_supports_gpu_offload() ? "Vulkan build / GPU offload available / DSpark target-only" : "Vulkan build / CPU fallback / DSpark target-only");
+    if (!LFM_VULKAN_AVAILABLE) return utf8_to_jstring(env, "CPU backend / GPU layers 0 / DSpark target-only");
+    const std::string suffix = " / GPU layers " + std::to_string(g_engine.gpu_layers) + " / DSpark target-only";
+    return utf8_to_jstring(env, (llama_supports_gpu_offload() ? "Vulkan build / GPU offload available" : "Vulkan build / CPU fallback") + suffix);
 }
 
 extern "C" JNIEXPORT jstring JNICALL

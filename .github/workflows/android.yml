@@ -29,10 +29,15 @@ jobs:
       - name: Install Vulkan build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y glslc glslang-tools spirv-headers libvulkan-dev
+          sudo apt-get install -y glslc glslang-tools libvulkan-dev cmake ninja-build
           glslc --version
           glslangValidator --version
           test -f /usr/include/vulkan/vulkan.h
+          git clone --depth 1 https://github.com/KhronosGroup/SPIRV-Headers.git "$RUNNER_TEMP/SPIRV-Headers"
+          cmake -S "$RUNNER_TEMP/SPIRV-Headers" -B "$RUNNER_TEMP/spirv-headers-build" -G Ninja \
+            -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/spirv-headers" -DSPIRV_HEADERS_ENABLE_TESTS=OFF
+          cmake --install "$RUNNER_TEMP/spirv-headers-build"
+          echo "CMAKE_PREFIX_PATH=$RUNNER_TEMP/spirv-headers" >> "$GITHUB_ENV"
 
       - name: Install Android SDK components
         run: |

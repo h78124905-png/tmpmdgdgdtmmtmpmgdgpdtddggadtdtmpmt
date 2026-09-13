@@ -8,13 +8,9 @@ import java.nio.charset.StandardCharsets
 
 data class SearchResult(val title: String, val url: String, val snippet: String)
 
-/**
- * Boundary for the web-search MCP service.
- * The app uses one built-in bridge endpoint; users do not configure an MCP URL.
- */
+/** Boundary for the legacy web-search bridge. */
 class SearchService {
     companion object {
-        // Local MCP bridge endpoint owned by the app/runtime.
         const val DEFAULT_BRIDGE_URL = "http://127.0.0.1:8787/call"
     }
 
@@ -72,9 +68,9 @@ class SearchService {
             setRequestProperty("Content-Type", "application/json; charset=utf-8")
         }
 
-    private fun callBridgeJson(tool: String, arguments: JSONObject): JSONObject? = try {
-        val c = connection()
-        try {
+    private fun callBridgeJson(tool: String, arguments: JSONObject): JSONObject? {
+        val c = try { connection() } catch (_: Exception) { return null }
+        return try {
             c.outputStream.use {
                 it.write(JSONObject().put("tool", tool).put("arguments", arguments).toString().toByteArray(StandardCharsets.UTF_8))
             }
@@ -82,19 +78,27 @@ class SearchService {
             val response = JSONObject(c.inputStream.bufferedReader().use { it.readText() })
             val text = extractText(response) ?: return null
             JSONObject(text)
-        } finally { c.disconnect() }
-    } catch (_: Exception) { null }
+        } catch (_: Exception) {
+            null
+        } finally {
+            c.disconnect()
+        }
+    }
 
-    private fun callBridgeText(tool: String, arguments: JSONObject): String? = try {
-        val c = connection()
-        try {
+    private fun callBridgeText(tool: String, arguments: JSONObject): String? {
+        val c = try { connection() } catch (_: Exception) { return null }
+        return try {
             c.outputStream.use {
                 it.write(JSONObject().put("tool", tool).put("arguments", arguments).toString().toByteArray(StandardCharsets.UTF_8))
             }
             if (c.responseCode !in 200..299) return null
             extractText(JSONObject(c.inputStream.bufferedReader().use { it.readText() }))
-        } finally { c.disconnect() }
-    } catch (_: Exception) { null }
+        } catch (_: Exception) {
+            null
+        } finally {
+            c.disconnect()
+        }
+    }
 
     private fun extractText(response: JSONObject): String? {
         response.optString("text").takeIf { it.isNotBlank() }?.let { return it }

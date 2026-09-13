@@ -7,10 +7,9 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 data class AgentResult(val answer: String, val thinking: String, val sources: List<SearchResult>, val error: String = "")
-
 data class ToolCallTrace(val name: String, val arguments: String, val id: String)
 
-class ToolAgent(private val engine: LlamaEngine) {
+class ToolAgent(private val engine: LlamaEngine, @Suppress("UNUSED_PARAMETER") legacySearch: SearchService? = null) {
     companion object {
         private const val TAG = "Phase1ToolAgent"
         private const val MAX_TOOL_CALLS = 4
@@ -37,9 +36,7 @@ class ToolAgent(private val engine: LlamaEngine) {
 
         repeat(MAX_TOOL_CALLS + 1) {
             val raw = engine.generateToolStep(messages.toString(), tools.toString(), maxTokens.coerceAtMost(1024))
-            val step = try {
-                JSONObject(raw)
-            } catch (e: Exception) {
+            val step = try { JSONObject(raw) } catch (e: Exception) {
                 return@withContext AgentResult("", thinking, sources, "Invalid native tool-step response: ${e.message}")
             }
 
@@ -64,14 +61,11 @@ class ToolAgent(private val engine: LlamaEngine) {
                         val name = c.optString("name")
                         val argsText = c.optString("arguments")
                         val id = c.optString("id").ifBlank { "call_${toolCallsUsed + i + 1}" }
-                        val args = try {
-                            JSONObject(argsText)
-                        } catch (_: Exception) {
+                        val args = try { JSONObject(argsText) } catch (_: Exception) {
                             return@withContext AgentResult("", thinking, sources, "Invalid arguments for $name")
                         }
                         if (!allowed(name, args)) return@withContext AgentResult("", thinking, sources, "Rejected tool call: $name")
                         val normalizedArgs = args.toString()
-                        val trace = ToolCallTrace(name, normalizedArgs, id)
                         val duplicateKey = "$name\u0000$normalizedArgs"
                         Log.d(TAG, "tool_call[$i] name=$name id=$id arguments=$normalizedArgs")
                         if (!seenCalls.add(duplicateKey)) {
@@ -79,14 +73,13 @@ class ToolAgent(private val engine: LlamaEngine) {
                             messages.put(JSONObject().put("role", "system").put("content", "The same tool call was already attempted. Do not repeat it. Give the best final answer."))
                             continue
                         }
-                        parsedCalls += trace
+                        parsedCalls += ToolCallTrace(name, normalizedArgs, id)
                         assistantCalls.put(JSONObject().put("id", id).put("type", "function").put("function", JSONObject().put("name", name).put("arguments", normalizedArgs)))
                     }
 
                     if (parsedCalls.isEmpty()) continue
                     messages.put(JSONObject().put("role", "assistant").put("tool_calls", assistantCalls))
                     toolCallsUsed += parsedCalls.size
-
                     for (call in parsedCalls) {
                         val result = dummyExecute(call.name, JSONObject(call.arguments))
                         Log.d(TAG, "tool_result name=${call.name} id=${call.id} length=${result.length}")

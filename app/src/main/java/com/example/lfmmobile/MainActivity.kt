@@ -343,7 +343,7 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable private fun Welcome(target: ModelSlot, draft: ModelSlot, enabled: Boolean, loaded: Boolean) {
-    Column(Modifier.fillMaxWidth().padding(top = 70.dp), horizontalAlignment = Alignment.CenterHorizontally) { Text("Local AI", style = MaterialTheme.typography.headlineSmall); Text(if (loaded) target.name else "Models から保存済みGGUFを選択"); if (loaded && enabled && draft.storedPath.isNotEmpty()) Text("DSpark enabled") }
+    Column(Modifier.fillMaxWidth().padding(top = 70.dp), horizontalAlignment = Alignment.CenterHorizontally) { Text("Local AI", style = MaterialTheme.typography.headlineSmall); Text(if (loaded) target.name else "Models から保存済みGGUFを選択"); if (loaded && enabled && draft.storedPath.isNotEmpty()) Text("DSpark draft selected (target-only)") }
 }
 
 @Composable private fun MessageBubble(message: Message) {

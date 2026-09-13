@@ -29,8 +29,9 @@ jobs:
       - name: Install Vulkan build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y glslc libvulkan-dev
+          sudo apt-get install -y glslc glslang-tools spirv-headers libvulkan-dev
           glslc --version
+          glslangValidator --version
           test -f /usr/include/vulkan/vulkan.h
 
       - name: Install Android SDK components

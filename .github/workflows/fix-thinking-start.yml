@@ -13,40 +13,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Mark template-driven thinking start
+      - name: Refactor shared generation path
         run: |
-          python3 <<'PY'
-          from pathlib import Path
-          p = Path('app/src/main/cpp/native-lib.cpp')
-          s = p.read_text()
-          needle = '''        if (!on_stats && env->ExceptionCheck()) env->ExceptionClear();
-    }
-
-    // Reuse the existing KV cache only when the new prompt has exactly the
-'''
-          insert = '''        if (!on_stats && env->ExceptionCheck()) env->ExceptionClear();
-
-        // Some reasoning chat templates (notably LFM2.5 Thinking) put the
-        // opening <think> tag in the prompt itself. The generated stream then
-        // begins directly with reasoning text and only emits the closing tag.
-        // Tell the UI parser that the stream is already inside the thinking block.
-        if (callback && on_token && !chat_params.thinking_start_tag.empty()) {
-            std::string marker = chat_params.thinking_start_tag;
-            jstring jmarker = utf8_to_jstring(env, marker);
-            env->CallVoidMethod(callback, on_token, jmarker);
-            env->DeleteLocalRef(jmarker);
-            if (env->ExceptionCheck()) env->ExceptionClear();
-        }
-    }
-
-    // Reuse the existing KV cache only when the new prompt has exactly the
-'''
-          if needle not in s:
-              raise SystemExit('callback insertion point not found')
-          p.write_text(s.replace(needle, insert, 1))
-          PY
+          python3 .github/scripts/refactor_shared_generation.py
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add app/src/main/cpp/native-lib.cpp
-          git commit -m 'Expose template-driven reasoning start to UI' || true
+          git add app/src/main/cpp/native-lib.cpp app/src/main/cpp/tool-calling.cpp
+          git commit -m 'Unify normal and tool generation paths'
           git push

@@ -1,1 +1,1 @@
-trigger-2026-09-06-v1
+trigger-2026-09-13-shared-generation

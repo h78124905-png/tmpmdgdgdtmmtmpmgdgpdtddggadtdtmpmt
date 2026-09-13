@@ -1,6 +1,8 @@
 #include "native-lib.cpp"
 
+#include <algorithm>
 #include <cstdio>
+#include <exception>
 #include <string>
 
 #include "json.h"
@@ -52,6 +54,7 @@ std::string make_tools(const common_chat_msg & msg) {
 
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_example_lfmmobile_LlamaEngine_nativeGenerateToolStep(JNIEnv * env, jobject, jstring messages_json, jstring tools_json, jint max_tokens) {
+    std::string stage = "entry";
     try {
         auto get_string = [&](jstring value) -> std::string {
             if (!value) return {};
@@ -76,21 +79,31 @@ Java_com_example_lfmmobile_LlamaEngine_nativeGenerateToolStep(JNIEnv * env, jobj
             return r;
         };
 
+        stage = "validate_engine";
         if (!g_engine.model || !g_engine.context || !g_engine.vocab) return tool_result(env, make_error("model not loaded"));
 
+        stage = "jni_input_conversion";
         const std::string messages_text = get_string(messages_json);
         const std::string tools_text = get_string(tools_json);
         LOGI("[tool] begin messages_bytes=%zu tools_bytes=%zu max_tokens=%d", messages_text.size(), tools_text.size(), max_tokens);
 
+        stage = "parse_messages_json";
         const common_json messages_value = common_json::parse(messages_text);
+        stage = "parse_tools_json";
         const common_json tools_value = common_json::parse(tools_text);
+
+        stage = "parse_messages_oaicompat";
         const auto messages = common_chat_msgs_parse_oaicompat(messages_value);
+        stage = "parse_tools_oaicompat";
         const auto tools = common_chat_tools_parse_oaicompat(tools_value);
+        LOGI("[tool] parsed messages=%zu tools=%zu", messages.size(), tools.size());
         if (tools.empty()) return tool_result(env, make_error("no tools supplied"));
 
+        stage = "chat_template_init";
         auto templates = common_chat_templates_init(g_engine.model, "");
         if (!templates) return tool_result(env, make_error("chat template init failed"));
 
+        stage = "chat_template_apply";
         common_chat_templates_inputs inputs;
         inputs.messages = messages;
         inputs.tools = tools;
@@ -104,26 +117,32 @@ Java_com_example_lfmmobile_LlamaEngine_nativeGenerateToolStep(JNIEnv * env, jobj
         LOGI("[tool] template applied prompt_bytes=%zu grammar_bytes=%zu format=%d", chat.prompt.size(), chat.grammar.size(), static_cast<int>(chat.format));
         if (chat.prompt.empty()) return tool_result(env, make_error("empty chat prompt"));
 
+        stage = "tokenize_tool_prompt";
         const llama_tokens prompt_tokens = common_tokenize(g_engine.context, chat.prompt, true, true);
         const uint32_t n_ctx = llama_n_ctx(g_engine.context);
         LOGI("[tool] prompt_tokens=%zu n_ctx=%u", prompt_tokens.size(), n_ctx);
         if (prompt_tokens.empty()) return tool_result(env, make_error("tool prompt tokenization failed"));
         if (prompt_tokens.size() + 1 >= n_ctx) return tool_result(env, make_error("prompt exceeds context"));
 
+        stage = "init_tool_sampler";
         common_params_sampling sampling;
         sampling.temp = 0.2f;
         sampling.top_k = 40;
         sampling.top_p = 0.95f;
         if (!chat.grammar.empty()) {
+            stage = "init_tool_grammar";
             sampling.grammar = common_grammar(COMMON_GRAMMAR_TYPE_TOOL_CALLS, chat.grammar);
             sampling.generation_prompt = chat.generation_prompt;
         }
         common_sampler_ptr sampler(common_sampler_init(g_engine.model, sampling));
         if (!sampler) return tool_result(env, make_error("tool sampler init failed"));
 
+        stage = "clear_tool_kv";
         llama_memory_clear(llama_get_memory(g_engine.context), false);
         const uint32_t n_batch = std::max<uint32_t>(1, llama_n_batch(g_engine.context));
         llama_batch batch = llama_batch_init(std::min<uint32_t>(n_batch, static_cast<uint32_t>(prompt_tokens.size())), 0, 1);
+
+        stage = "prefill_tool_prompt";
         for (size_t i = 0; i < prompt_tokens.size(); ++i) {
             common_batch_add(batch, prompt_tokens[i], static_cast<llama_pos>(i), {0}, i + 1 == prompt_tokens.size());
             if (batch.n_tokens == static_cast<int>(n_batch) || i + 1 == prompt_tokens.size()) {
@@ -136,10 +155,13 @@ Java_com_example_lfmmobile_LlamaEngine_nativeGenerateToolStep(JNIEnv * env, jobj
         }
         llama_batch_free(batch);
 
+        stage = "sample_first_tool_token";
         llama_token next = common_sampler_sample(sampler.get(), g_engine.context, static_cast<int>(prompt_tokens.size()) - 1);
         common_sampler_accept(sampler.get(), next, true);
         std::string generated;
         const int limit = std::max(1, static_cast<int>(max_tokens));
+
+        stage = "generate_tool_tokens";
         for (int i = 0; i < limit; ++i) {
             if (llama_vocab_is_eog(g_engine.vocab, next)) break;
             generated += common_token_to_piece(g_engine.context, next);
@@ -155,18 +177,22 @@ Java_com_example_lfmmobile_LlamaEngine_nativeGenerateToolStep(JNIEnv * env, jobj
         }
 
         LOGI("[tool] generated_bytes=%zu", generated.size());
+        stage = "parse_generated_tool_call";
         common_chat_parser_params parser(chat);
         parser.parse_tool_calls = true;
         const common_chat_msg parsed = common_chat_parse(generated, false, parser);
-        const std::string result = parsed.tool_calls.empty() ? make_final(parsed) : make_tools(parsed);
         LOGI("[tool] parsed tool_calls=%zu final_bytes=%zu", parsed.tool_calls.size(), parsed.content.size());
+        stage = "build_result";
+        const std::string result = parsed.tool_calls.empty() ? make_final(parsed) : make_tools(parsed);
         return tool_result(env, result);
     } catch (const std::exception & e) {
-        const std::string message = std::string("native tool-step exception: ") + e.what();
+        const std::string detail = e.what() && *e.what() ? e.what() : "<empty what()>";
+        const std::string message = "native tool-step exception at " + stage + ": " + detail;
         LOGE("[tool] %s", message.c_str());
         return tool_result(env, make_error(message));
     } catch (...) {
-        LOGE("[tool] unknown native exception");
-        return tool_result(env, make_error("native tool-step unknown exception"));
+        const std::string message = "native tool-step unknown exception at " + stage;
+        LOGE("[tool] %s", message.c_str());
+        return tool_result(env, make_error(message));
     }
 }

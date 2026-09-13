@@ -59,6 +59,8 @@ jobs:
             sed -i '1i @file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)' "$FILE"
           fi
 
+      # Rebuild the entire native layer on every push so CPU-only regressions
+      # cannot hide behind a stale APK artifact.
       - name: Build release APK
         run: |
           gradle --no-daemon clean assembleRelease --stacktrace

@@ -90,107 +90,63 @@ std::string add_timing(const std::string & result, const ToolTiming & t) {
 
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_example_lfmmobile_LlamaEngine_nativeGenerateToolStep(JNIEnv * env, jobject, jstring messages_json, jstring tools_json, jint max_tokens, jobject callback) {
-    std::string stage="entry";
-    ToolTiming timing;
-    auto progress = [&](const char * s) { stage=s; report_progress(env, callback, s, timing.total_ms()); };
+    std::string stage = "entry";
     try {
         auto get_string = [&](jstring value)->std::string {
             if (!value) return {};
-            const jsize n=env->GetStringLength(value); const jchar * p=env->GetStringChars(value,nullptr);
-            if (!p) { if(env->ExceptionCheck()) env->ExceptionClear(); throw std::runtime_error("JNI GetStringChars failed"); }
-            std::string r; r.reserve(static_cast<size_t>(n)*2);
-            for(jsize i=0;i<n;++i){ uint32_t cp=p[i]; if(cp>=0xD800&&cp<=0xDBFF&&i+1<n&&p[i+1]>=0xDC00&&p[i+1]<=0xDFFF) cp=0x10000+((cp-0xD800)<<10)+(p[++i]-0xDC00);
-                if(cp<=0x7f) r.push_back((char)cp); else if(cp<=0x7ff){r.push_back((char)(0xc0|(cp>>6)));r.push_back((char)(0x80|(cp&63)));}
-                else if(cp<=0xffff){r.push_back((char)(0xe0|(cp>>12)));r.push_back((char)(0x80|((cp>>6)&63)));r.push_back((char)(0x80|(cp&63)));}
-                else{r.push_back((char)(0xf0|(cp>>18)));r.push_back((char)(0x80|((cp>>12)&63)));r.push_back((char)(0x80|((cp>>6)&63)));r.push_back((char)(0x80|(cp&63)));}}
-            env->ReleaseStringChars(value,p); return r;
-        };
-
-        progress("validate_engine");
-        if(!g_engine.model||!g_engine.context||!g_engine.vocab) return tool_result(env,make_error("model not loaded"));
-        progress("jni_input_conversion");
-        const std::string messages_text=get_string(messages_json), tools_text=get_string(tools_json); timing.input_ms=timing.mark();
-        progress("parse_messages_json"); const common_json messages_value=common_json::parse(messages_text); timing.parse_messages_ms=timing.mark();
-        progress("parse_tools_json"); const common_json tools_value=common_json::parse(tools_text); timing.parse_tools_ms=timing.mark();
-        progress("parse_messages_oaicompat"); const auto messages=common_chat_msgs_parse_oaicompat(messages_value); timing.parse_messages_ms+=timing.mark();
-        progress("parse_tools_oaicompat"); const auto tools=common_chat_tools_parse_oaicompat(tools_value); timing.parse_tools_ms+=timing.mark();
-        if(tools.empty()) return tool_result(env,make_error("no tools supplied"));
-
-        progress("chat_template_init"); auto templates=common_chat_templates_init(g_engine.model,"");
-        if(!templates) return tool_result(env,make_error("chat template init failed")); timing.template_ms=timing.mark();
-        progress("chat_template_apply");
-        common_chat_templates_inputs inputs;
-        inputs.messages=messages;
-        inputs.tools=tools;
-        inputs.tool_choice=COMMON_CHAT_TOOL_CHOICE_AUTO;
-        inputs.parallel_tool_calls=false;
-        inputs.add_generation_prompt=true;
-        inputs.use_jinja=true;
-        // Tool selection uses a separate, model-supplied tool template. Do not
-        // request reasoning mode here: several tool templates combine Jinja
-        // tool rendering and thinking instructions in incompatible ways.
-        inputs.enable_thinking=false;
-        const common_chat_params chat=common_chat_templates_apply(templates.get(),inputs); timing.template_ms+=timing.mark();
-        if(chat.prompt.empty()) return tool_result(env,make_error("empty chat prompt"));
-
-        progress("tokenize_tool_prompt"); const llama_tokens prompt_tokens=common_tokenize(g_engine.context,chat.prompt,true,true); timing.tokenize_ms=timing.mark();
-        const uint32_t n_ctx=llama_n_ctx(g_engine.context); if(prompt_tokens.empty()) return tool_result(env,make_error("tool prompt tokenization failed")); if(prompt_tokens.size()+1>=n_ctx) return tool_result(env,make_error("prompt exceeds context"));
-
-        progress("init_tool_sampler");
-        common_params_sampling sampling;
-        sampling.temp=.2f; sampling.top_k=40; sampling.top_p=.95f;
-        sampling.generation_prompt.clear();
-        progress("init_tool_sampler_create");
-        common_sampler_ptr sampler;
-        sampler.reset(common_sampler_init(g_engine.model,sampling));
-        timing.sampler_ms=timing.mark();
-        if(!sampler) return tool_result(env,make_error("tool sampler init failed"));
-
-        progress("clear_tool_kv");
-        llama_memory_clear(llama_get_memory(g_engine.context),false);
-        if (g_engine.draft_init && g_engine.draft_init->context()) {
-            llama_memory_clear(llama_get_memory(g_engine.draft_init->context()), false);
-        }
-        timing.kv_clear_ms=timing.mark();
-
-        if (g_engine.speculative) {
-            common_speculative_begin(g_engine.speculative.get(), 0, prompt_tokens);
-        }
-
-        const uint32_t n_batch=std::max<uint32_t>(1,llama_n_batch(g_engine.context));
-        llama_batch batch=llama_batch_init(std::min<uint32_t>(n_batch,(uint32_t)prompt_tokens.size()),0,1);
-        progress("prefill_tool_prompt");
-        for(size_t i=0;i<prompt_tokens.size();++i){
-            common_batch_add(batch,prompt_tokens[i],(llama_pos)i,{0},i+1==prompt_tokens.size());
-            if(batch.n_tokens==(int)n_batch||i+1==prompt_tokens.size()){
-                if(llama_decode(g_engine.context,batch)!=0){llama_batch_free(batch);return tool_result(env,make_error("tool prompt decode failed"));}
-                if (g_engine.speculative && !common_speculative_process(g_engine.speculative.get(), batch)) {
-                    llama_batch_free(batch);
-                    return tool_result(env,make_error("speculative tool prompt process failed"));
-                }
-                common_batch_clear(batch);
-                report_progress(env,callback,"prefill_tool_prompt",timing.total_ms());
+            const jsize n = env->GetStringLength(value);
+            const jchar * p = env->GetStringChars(value, nullptr);
+            if (!p) { if (env->ExceptionCheck()) env->ExceptionClear(); throw std::runtime_error("JNI GetStringChars failed"); }
+            std::string r; r.reserve(static_cast<size_t>(n) * 2);
+            for (jsize i = 0; i < n; ++i) {
+                uint32_t cp = p[i];
+                if (cp >= 0xD800 && cp <= 0xDBFF && i + 1 < n && p[i + 1] >= 0xDC00 && p[i + 1] <= 0xDFFF) cp = 0x10000 + ((cp - 0xD800) << 10) + (p[++i] - 0xDC00);
+                if (cp <= 0x7f) r.push_back((char)cp);
+                else if (cp <= 0x7ff) { r.push_back((char)(0xc0 | (cp >> 6))); r.push_back((char)(0x80 | (cp & 63))); }
+                else if (cp <= 0xffff) { r.push_back((char)(0xe0 | (cp >> 12))); r.push_back((char)(0x80 | ((cp >> 6) & 63))); r.push_back((char)(0x80 | (cp & 63))); }
+                else { r.push_back((char)(0xf0 | (cp >> 18))); r.push_back((char)(0x80 | ((cp >> 12) & 63))); r.push_back((char)(0x80 | ((cp >> 6) & 63))); r.push_back((char)(0x80 | (cp & 63))); }
             }
-        }
-        llama_batch_free(batch); timing.prefill_ms=timing.mark(); report_progress(env,callback,"prefill_complete",timing.total_ms());
-
-        progress("sample_first_tool_token"); llama_token next=common_sampler_sample(sampler.get(),g_engine.context,(int)prompt_tokens.size()-1); common_sampler_accept(sampler.get(),next,true); timing.first_sample_ms=timing.mark();
-        std::string generated; const int limit=std::max(1,std::min((int)max_tokens,256)); progress("generate_tool_tokens");
-        for(int i=0;i<limit;++i){
-            if((i % 8)==0) report_progress(env,callback,"generate_tool_tokens",timing.total_ms());
-            if(llama_vocab_is_eog(g_engine.vocab,next))break;
-            generated+=common_token_to_piece(g_engine.context,next);
-            llama_batch b=llama_batch_init(1,0,1);
-            common_batch_add(b,next,(llama_pos)(prompt_tokens.size()+i),{0},true);
-            if(llama_decode(g_engine.context,b)!=0){llama_batch_free(b);return tool_result(env,make_error("tool decode failed"));}
-            next=common_sampler_sample(sampler.get(),g_engine.context,0);
-            common_sampler_accept(sampler.get(),next,true);
-            llama_batch_free(b);
-        }
-        timing.generation_ms=timing.mark();
-        progress("parse_generated_tool_call"); common_chat_parser_params parser(chat); parser.parse_tool_calls=true; const common_chat_msg parsed=common_chat_parse(generated,false,parser); timing.parse_result_ms=timing.mark();
-        const std::string result=parsed.tool_calls.empty()?make_final(parsed):make_tools(parsed); report_progress(env,callback,"complete",timing.total_ms());
-        return tool_result(env,add_timing(result,timing));
-    }catch(const std::exception&e){return tool_result(env,make_error("native tool-step exception at "+stage+": "+(e.what()&&*e.what()?e.what():"<empty what()>")));}
-    catch(...){return tool_result(env,make_error("native tool-step unknown exception at "+stage));}
+            env->ReleaseStringChars(value, p);
+            return r;
+        };
+        report_progress(env, callback, "parse_inputs", 0);
+        if (!g_engine.model || !g_engine.context || !g_engine.vocab) return tool_result(env, make_error("model not loaded"));
+        const common_json messages_value = common_json::parse(get_string(messages_json));
+        const common_json tools_value = common_json::parse(get_string(tools_json));
+        report_progress(env, callback, "parse_messages", 0);
+        const auto messages = common_chat_msgs_parse_oaicompat(messages_value);
+        report_progress(env, callback, "parse_tools", 0);
+        const auto tools = common_chat_tools_parse_oaicompat(tools_value);
+        if (tools.empty()) return tool_result(env, make_error("no tools supplied"));
+        report_progress(env, callback, "chat_template_apply", 0);
+        auto templates = common_chat_templates_init(g_engine.model, "");
+        if (!templates) return tool_result(env, make_error("chat template init failed"));
+        common_chat_templates_inputs inputs;
+        inputs.messages = messages;
+        inputs.tools = tools;
+        inputs.tool_choice = COMMON_CHAT_TOOL_CHOICE_AUTO;
+        inputs.parallel_tool_calls = false;
+        inputs.add_generation_prompt = true;
+        inputs.use_jinja = true;
+        inputs.enable_thinking = true;
+        const common_chat_params chat = common_chat_templates_apply(templates.get(), inputs);
+        if (chat.prompt.empty()) return tool_result(env, make_error("empty chat prompt"));
+        report_progress(env, callback, "tokenize_tool_prompt", 0);
+        const llama_tokens input = common_tokenize(g_engine.context, chat.prompt, true, true);
+        if (input.empty()) return tool_result(env, make_error("tool prompt tokenization failed"));
+        auto progress = [&](const char * s) { report_progress(env, callback, s, 0); };
+        const std::string generated = generate_chat_impl(env, chat, input, std::max(1, std::min((int)max_tokens, 256)), nullptr, progress);
+        if (generated.rfind("[", 0) == 0) return tool_result(env, make_error(generated));
+        report_progress(env, callback, "parse_generated_tool_call", 0);
+        common_chat_parser_params parser(chat);
+        parser.parse_tool_calls = true;
+        const common_chat_msg parsed = common_chat_parse(generated, false, parser);
+        const std::string result = parsed.tool_calls.empty() ? make_final(parsed) : make_tools(parsed);
+        report_progress(env, callback, "complete", 0);
+        return tool_result(env, result);
+    } catch (const std::exception & e) {
+        return tool_result(env, make_error("native tool-step exception at " + stage + ": " + (e.what() && *e.what() ? e.what() : "<empty what()>")));
+    } catch (...) {
+        return tool_result(env, make_error("native tool-step unknown exception at " + stage));
+    }
 }

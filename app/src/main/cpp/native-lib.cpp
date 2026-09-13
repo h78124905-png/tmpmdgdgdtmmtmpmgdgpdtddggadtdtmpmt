@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstdint>
 #include <exception>
+#include <functional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -158,32 +159,15 @@ bool decode_batch(llama_context * context, llama_batch & batch) {
     return rc == 0;
 }
 
-std::string generate_impl(JNIEnv * env, const std::string & prompt_text, int max_tokens, jobject callback) {
-    if (!g_engine.model || !g_engine.context || !g_engine.sampler) return "[model not loaded]";
-    if (prompt_text.empty()) return {};
-
+std::string generate_chat_impl(JNIEnv * env, const common_chat_params & chat_params, const llama_tokens & input, int max_tokens, jobject callback, const std::function<void(const char *)> & progress) {
+    if (!g_engine.model || !g_engine.context) return "[model not loaded]";
+    if (input.empty()) return {};
+    if (input.size() + 1 >= llama_n_ctx(g_engine.context)) return "[prompt exceeds context]";
+    if (progress) progress("sampler_init");
     common_params_sampling sampling;
     sampling.temp = 0.7f; sampling.top_k = 40; sampling.top_p = 0.95f;
     g_engine.sampler.reset(common_sampler_init(g_engine.model, sampling));
     if (!g_engine.sampler) return "[sampler init failed]";
-
-    auto messages = build_messages(prompt_text);
-    if (messages.size() <= 1) return "[chat format failed: no user message]";
-    auto templates = common_chat_templates_init(g_engine.model, "");
-    if (!templates) return "[chat template init failed]";
-    common_chat_templates_inputs chat_inputs;
-    chat_inputs.messages = std::move(messages);
-    chat_inputs.add_generation_prompt = true;
-    chat_inputs.use_jinja = true;
-    chat_inputs.enable_thinking = true;
-    const common_chat_params chat_params = common_chat_templates_apply(templates.get(), chat_inputs);
-    if (chat_params.prompt.empty()) return "[chat template produced an empty prompt]";
-
-    const llama_tokens input = common_tokenize(g_engine.context, chat_params.prompt, true, true);
-    if (input.empty()) return "[tokenization failed]";
-    const uint32_t n_ctx = llama_n_ctx(g_engine.context);
-    if (input.size() + 1 >= n_ctx) return "[prompt exceeds context]";
-
     jmethodID on_token = nullptr; jmethodID on_stats = nullptr;
     if (callback) {
         jclass callback_class = env->GetObjectClass(callback);
@@ -194,7 +178,9 @@ std::string generate_impl(JNIEnv * env, const std::string & prompt_text, int max
         if (!on_stats && env->ExceptionCheck()) env->ExceptionClear();
     }
 
-    // Baseline conversation path: always start from a clean KV state.
+    if (progress) progress("kv_clear");
+
+    // Shared generation path: always start from a clean KV state.
     // The previous implementation tracked only the prompt in cached_prompt
     // while the KV cache also contained generated tokens. That made the second
     // turn and new chats operate on inconsistent positions. Correctness first;
@@ -204,6 +190,7 @@ std::string generate_impl(JNIEnv * env, const std::string & prompt_text, int max
         llama_memory_clear(llama_get_memory(g_engine.draft_init->context()), false);
     }
 
+    if (progress) progress("prefill");
     const auto prefill_start = std::chrono::steady_clock::now();
     const uint32_t n_batch = std::max<uint32_t>(1, llama_n_batch(g_engine.context));
     const uint32_t n_ubatch = llama_n_ubatch(g_engine.context);
@@ -228,12 +215,14 @@ std::string generate_impl(JNIEnv * env, const std::string & prompt_text, int max
     const auto prefill_end = std::chrono::steady_clock::now();
     const int64_t prefill_ms = std::max<int64_t>(0, std::chrono::duration_cast<std::chrono::milliseconds>(prefill_end - prefill_start).count());
     LOGI("[prefill] completed prompt_tokens=%zu elapsed_ms=%lld speed=%.2f tok/s", input.size(), static_cast<long long>(prefill_ms), prefill_ms > 0 ? static_cast<double>(to_eval) * 1000.0 / prefill_ms : 0.0);
+    if (progress) progress("prefill_complete");
 
     std::vector<llama_token> history = input;
     llama_pos n_past = static_cast<llama_pos>(input.size());
     llama_token sampled = common_sampler_sample(g_engine.sampler.get(), g_engine.context, static_cast<int>(input.size()) - 1);
     common_sampler_accept(g_engine.sampler.get(), sampled, true);
 
+    if (progress) progress("generation");
     std::string output; std::string utf8_pending;
     const auto t_start = std::chrono::steady_clock::now(); int generated = 0;
 
@@ -334,6 +323,25 @@ std::string generate_impl(JNIEnv * env, const std::string & prompt_text, int max
     }
     if (callback && on_token) emit_final_utf8(env, callback, on_token, utf8_pending);
     return output;
+}
+
+std::string generate_impl(JNIEnv * env, const std::string & prompt_text, int max_tokens, jobject callback) {
+    if (!g_engine.model || !g_engine.context) return "[model not loaded]";
+    if (prompt_text.empty()) return {};
+    auto messages = build_messages(prompt_text);
+    if (messages.size() <= 1) return "[chat format failed: no user message]";
+    auto templates = common_chat_templates_init(g_engine.model, "");
+    if (!templates) return "[chat template init failed]";
+    common_chat_templates_inputs chat_inputs;
+    chat_inputs.messages = std::move(messages);
+    chat_inputs.add_generation_prompt = true;
+    chat_inputs.use_jinja = true;
+    chat_inputs.enable_thinking = true;
+    const common_chat_params chat_params = common_chat_templates_apply(templates.get(), chat_inputs);
+    if (chat_params.prompt.empty()) return "[chat template produced an empty prompt]";
+    const llama_tokens input = common_tokenize(g_engine.context, chat_params.prompt, true, true);
+    if (input.empty()) return "[tokenization failed]";
+    return generate_chat_impl(env, chat_params, input, max_tokens, callback, {});
 }
 }
 

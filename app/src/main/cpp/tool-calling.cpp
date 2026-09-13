@@ -129,22 +129,29 @@ Java_com_example_lfmmobile_LlamaEngine_nativeGenerateToolStep(JNIEnv * env, jobj
         sampling.temp = 0.2f;
         sampling.top_k = 40;
         sampling.top_p = 0.95f;
-        if (!chat.grammar.empty()) {
-            stage = "prepare_tool_grammar";
-            sampling.grammar = common_grammar(COMMON_GRAMMAR_TYPE_TOOL_CALLS, chat.grammar);
-            sampling.generation_prompt = chat.generation_prompt;
+        const bool has_tool_grammar = !chat.grammar.empty();
+        if (has_tool_grammar) {
+            stage = "init_tool_grammar";
+            // Grammar construction can throw for model/template combinations that do not
+            // produce a grammar compatible with the tool-call sampler. Tool calling must
+            // not leave the generation thread blocked, so treat grammar as optional and
+            // fall back to normal sampling when construction fails.
+            try {
+                sampling.grammar = common_grammar(COMMON_GRAMMAR_TYPE_TOOL_CALLS, chat.grammar);
+                sampling.generation_prompt = chat.generation_prompt;
+            } catch (const std::exception & e) {
+                LOGE("[tool] grammar construction failed: %s; disabling grammar", e.what() && *e.what() ? e.what() : "<empty what()>");
+                sampling.grammar = common_grammar();
+                sampling.generation_prompt.clear();
+            } catch (...) {
+                LOGE("[tool] grammar construction failed: unknown; disabling grammar");
+                sampling.grammar = common_grammar();
+                sampling.generation_prompt.clear();
+            }
         }
 
-        common_sampler_ptr sampler;
-        try {
-            sampler.reset(common_sampler_init(g_engine.model, sampling));
-        } catch (const std::exception & e) {
-            if (sampling.grammar.empty()) throw;
-            LOGE("[tool] grammar sampler initialization failed, retrying without grammar: %s", e.what());
-            sampling.grammar = common_grammar();
-            sampling.generation_prompt.clear();
-            sampler.reset(common_sampler_init(g_engine.model, sampling));
-        }
+        stage = "init_tool_sampler_create";
+        common_sampler_ptr sampler(common_sampler_init(g_engine.model, sampling));
         if (!sampler) return tool_result(env, make_error("tool sampler init failed"));
 
         stage = "clear_tool_kv";

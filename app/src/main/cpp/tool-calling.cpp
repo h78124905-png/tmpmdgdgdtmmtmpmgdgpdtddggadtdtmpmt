@@ -130,11 +130,21 @@ Java_com_example_lfmmobile_LlamaEngine_nativeGenerateToolStep(JNIEnv * env, jobj
         sampling.top_k = 40;
         sampling.top_p = 0.95f;
         if (!chat.grammar.empty()) {
-            stage = "init_tool_grammar";
+            stage = "prepare_tool_grammar";
             sampling.grammar = common_grammar(COMMON_GRAMMAR_TYPE_TOOL_CALLS, chat.grammar);
             sampling.generation_prompt = chat.generation_prompt;
         }
-        common_sampler_ptr sampler(common_sampler_init(g_engine.model, sampling));
+
+        common_sampler_ptr sampler;
+        try {
+            sampler.reset(common_sampler_init(g_engine.model, sampling));
+        } catch (const std::exception & e) {
+            if (sampling.grammar.empty()) throw;
+            LOGE("[tool] grammar sampler initialization failed, retrying without grammar: %s", e.what());
+            sampling.grammar = common_grammar();
+            sampling.generation_prompt.clear();
+            sampler.reset(common_sampler_init(g_engine.model, sampling));
+        }
         if (!sampler) return tool_result(env, make_error("tool sampler init failed"));
 
         stage = "clear_tool_kv";

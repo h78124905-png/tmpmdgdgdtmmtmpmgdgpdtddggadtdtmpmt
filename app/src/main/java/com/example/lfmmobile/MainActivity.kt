@@ -199,12 +199,14 @@ class MainActivity : ComponentActivity() {
     }
 
     suspend fun directSend(q: String) {
+        updateToolProgress("prompt_prepare", 0L)
         val conv = buildString {
             append("You are a helpful text-only local assistant. Answer naturally and accurately.\n\nConversation:\n")
             messages.dropLast(1).forEach { append(if (it.user) "User: " else "Assistant: ").append(it.text).append('\n') }
             append("User: ").append(q).append("\nAssistant:")
         }
         val channel = Channel<StreamEvent>(Channel.UNLIMITED)
+        updateToolProgress("generating", 0L)
         val job = scope.launch(Dispatchers.Default) { try { engine.generateStream(conv, maxTokens, { channel.trySend(StreamEvent.Token(it)) }, { a, b, c, d -> channel.trySend(StreamEvent.Stats(GenerationStats(a, b, c, d))) }) } finally { channel.close() } }
         val parser = ThinkStreamParser()
         for (event in channel) when (event) {
@@ -212,6 +214,7 @@ class MainActivity : ComponentActivity() {
             is StreamEvent.Stats -> stats = event.value
         }
         job.join()
+        updateToolProgress("finalizing", stats.elapsedMs)
         val e = parser.finish()
         if (e.thinking.isNotEmpty() || e.answer.isNotEmpty()) { val m = messages.lastOrNull() ?: Message(false, ""); messages = messages.dropLast(1) + m.copy(text = m.text + e.answer, thinking = m.thinking + e.thinking) }
         save()

@@ -81,6 +81,11 @@ target_compile_definitions(lfm_native PRIVATE LFM_VULKAN_AVAILABLE=$<BOOL:${LFM_
 target_include_directories(lfm_native PRIVATE ${llama_cpp_SOURCE_DIR}/include ${llama_cpp_SOURCE_DIR}/common)
 target_link_libraries(lfm_native PRIVATE llama-common llama log android)
 if (LFM_VULKAN_AVAILABLE AND TARGET Vulkan::Vulkan)
+    if (TARGET ggml-vulkan)
+        target_link_libraries(lfm_native PRIVATE ggml-vulkan)
+    endif()
+    # Keep Vulkan after the static ggml-vulkan archive so its symbols are
+    # visible when the Android linker scans the archive.
     target_link_libraries(lfm_native PRIVATE Vulkan::Vulkan)
-    message(STATUS "LFM: linking Vulkan::Vulkan")
+    message(STATUS "LFM: linking ggml-vulkan then Vulkan::Vulkan")
 endif()

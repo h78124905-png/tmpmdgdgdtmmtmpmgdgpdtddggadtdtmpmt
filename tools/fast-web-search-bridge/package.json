@@ -1,0 +1,9 @@
+{
+  "name": "lfm-mobile-fast-web-search-bridge",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0"
+  }
+}

@@ -6,7 +6,7 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 
-data class AgentResult(val answer: String, val thinking: String, val sources: List<SearchResult>, val error: String = "")
+data class AgentResult(val answer: String, val thinking: String, val sources: List<SearchResult>, val error: String = "", val timing: String = "")
 data class ToolCallTrace(val name: String, val arguments: String, val id: String)
 
 class ToolAgent(
@@ -49,6 +49,7 @@ class ToolAgent(
         var thinking = ""
         var toolCallsUsed = 0
         var iterations = 0
+        var lastTiming = ""
 
         while (iterations <= MAX_TOOL_CALLS) {
             iterations++
@@ -56,27 +57,31 @@ class ToolAgent(
                 engine.generateToolStep(messages.toString(), tools.toString(), maxTokens.coerceAtMost(1024))
             } catch (e: Exception) {
                 Log.e(TAG, "native tool-step failed", e)
-                return@withContext AgentResult("", thinking, sources, e.message ?: e::class.java.simpleName)
+                return@withContext AgentResult("", thinking, sources, e.message ?: e::class.java.simpleName, lastTiming)
             }
             val step = try {
                 JSONObject(raw)
             } catch (e: Exception) {
-                return@withContext AgentResult("", thinking, sources, "Invalid native tool-step response: ${e.message}")
+                return@withContext AgentResult("", thinking, sources, "Invalid native tool-step response: ${e.message}", lastTiming)
+            }
+            step.optJSONObject("timing")?.let { t ->
+                lastTiming = t.toString()
+                Log.i(TAG, "[tool][timing] $lastTiming")
             }
 
             when (step.optString("type")) {
                 "final" -> return@withContext AgentResult(
-                    step.optString("content"), thinking + step.optString("reasoning"), sources
+                    step.optString("content"), thinking + step.optString("reasoning"), sources, timing = lastTiming
                 )
                 "error" -> return@withContext AgentResult(
-                    "", thinking, sources, step.optString("error", "tool generation failed")
+                    "", thinking, sources, step.optString("error", "tool generation failed"), lastTiming
                 )
                 "tool_calls" -> {
                     val calls = step.optJSONArray("calls")
-                        ?: return@withContext AgentResult("", thinking, sources, "Tool call list missing")
+                        ?: return@withContext AgentResult("", thinking, sources, "Tool call list missing", lastTiming)
                     thinking += step.optString("reasoning")
                     Log.d(TAG, "tool_calls count=${calls.length()} parallel=false")
-                    if (calls.length() == 0) return@withContext AgentResult("", thinking, sources, "Empty tool-call list")
+                    if (calls.length() == 0) return@withContext AgentResult("", thinking, sources, "Empty tool-call list", lastTiming)
 
                     if (toolCallsUsed + calls.length() > MAX_TOOL_CALLS) {
                         Log.d(TAG, "tool call limit reached: used=$toolCallsUsed incoming=${calls.length()}")
@@ -90,14 +95,14 @@ class ToolAgent(
                     val parsedCalls = mutableListOf<ToolCallTrace>()
                     for (i in 0 until calls.length()) {
                         val c = calls.optJSONObject(i)
-                            ?: return@withContext AgentResult("", thinking, sources, "Invalid tool call")
+                            ?: return@withContext AgentResult("", thinking, sources, "Invalid tool call", lastTiming)
                         val name = c.optString("name")
                         val argsText = c.optString("arguments")
                         val id = c.optString("id").ifBlank { "call_${toolCallsUsed + i + 1}" }
                         val args = try { JSONObject(argsText) } catch (_: Exception) {
-                            return@withContext AgentResult("", thinking, sources, "Invalid arguments for $name")
+                            return@withContext AgentResult("", thinking, sources, "Invalid arguments for $name", lastTiming)
                         }
-                        if (!allowed(name, args)) return@withContext AgentResult("", thinking, sources, "Rejected tool call: $name")
+                        if (!allowed(name, args)) return@withContext AgentResult("", thinking, sources, "Rejected tool call: $name", lastTiming)
                         val normalizedArgs = args.toString()
                         val duplicateKey = "$name\u0000$normalizedArgs"
                         Log.d(TAG, "tool_call[$i] name=$name id=$id arguments=$normalizedArgs")
@@ -141,10 +146,10 @@ class ToolAgent(
                             .put("tool_call_id", call.id).put("tool_name", call.name).put("content", result))
                     }
                 }
-                else -> return@withContext AgentResult("", thinking, sources, "Unknown native tool-step type")
+                else -> return@withContext AgentResult("", thinking, sources, "Unknown native tool-step type", lastTiming)
             }
         }
-        AgentResult("", thinking, sources, "Tool-call loop exhausted")
+        AgentResult("", thinking, sources, "Tool-call loop exhausted", lastTiming)
     }
 
     private fun allowed(name: String, args: JSONObject): Boolean = when (name) {

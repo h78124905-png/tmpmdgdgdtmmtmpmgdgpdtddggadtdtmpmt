@@ -22,7 +22,9 @@ object ToolProgress {
     }
 }
 
-fun toolProgressLabel(stage: String): String = when (stage) {
+fun toolProgressLabel(stage: String): String = when {
+    stage.startsWith("prefill ") -> "プロンプトを読み込み中（${stage.removePrefix("prefill ")})"
+    else -> when (stage) {
     "validate_engine" -> "モデル確認"
     "jni_input_conversion" -> "入力変換"
     "parse_messages_json" -> "会話解析"
@@ -42,4 +44,5 @@ fun toolProgressLabel(stage: String): String = when (stage) {
     "build_result" -> "結果作成"
     "complete" -> "完了"
     else -> stage.ifBlank { "準備中" }
+    }
 }

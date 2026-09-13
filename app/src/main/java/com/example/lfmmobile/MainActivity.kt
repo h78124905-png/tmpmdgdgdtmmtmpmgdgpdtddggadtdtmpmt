@@ -130,9 +130,15 @@ class MainActivity : ComponentActivity() {
     }
 
     fun updateToolProgress(stage: String, elapsedMs: Long) {
+        val previousPhase = toolStage.substringBefore(' ')
+        val nextPhase = stage.substringBefore(' ')
         toolStage = stage
-        toolElapsedMs = elapsedMs
-        toolProgressStartedAt = if (elapsedMs > 0L) SystemClock.elapsedRealtime() - elapsedMs else SystemClock.elapsedRealtime()
+        if (previousPhase != nextPhase || toolProgressStartedAt == 0L) {
+            toolElapsedMs = elapsedMs
+            toolProgressStartedAt = if (elapsedMs > 0L) SystemClock.elapsedRealtime() - elapsedMs else SystemClock.elapsedRealtime()
+        } else if (elapsedMs > toolElapsedMs) {
+            toolElapsedMs = elapsedMs
+        }
     }
 
     fun refresh() {

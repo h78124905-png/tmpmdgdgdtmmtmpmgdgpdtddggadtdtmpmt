@@ -162,12 +162,18 @@ std::string generate_chat_impl(JNIEnv *env, const common_chat_params &, const ll
 
     const auto prefill_start = std::chrono::steady_clock::now();
     const uint32_t n_batch = std::max<uint32_t>(1, llama_n_batch(g_engine.context));
+    size_t prefill_tokens = 0;
     llama_batch batch = llama_batch_init((int)std::min<uint32_t>(n_batch, (uint32_t)input.size()), 0, 1);
     for (size_t i = 0; i < input.size(); ++i) {
         common_batch_add(batch, input[i], (llama_pos)i, {0}, i + 1 == input.size());
         if (batch.n_tokens == (int)n_batch || i + 1 == input.size()) {
             if (llama_decode(g_engine.context, batch) != 0) { llama_batch_free(batch); return "[prompt decode failed]"; }
+            prefill_tokens += batch.n_tokens;
             common_batch_clear(batch);
+            if (progress_cb) {
+                const auto elapsed = std::max<int64_t>(1, std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - prefill_start).count());
+                progress_cb(("prefill " + std::to_string(prefill_tokens) + "/" + std::to_string(input.size()) + " tokens " + std::to_string(elapsed) + "ms").c_str());
+            }
         }
     }
     llama_batch_free(batch);

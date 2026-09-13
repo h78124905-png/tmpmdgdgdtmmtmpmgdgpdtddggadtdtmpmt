@@ -44,7 +44,7 @@ private class ThinkStreamParser {
     data class Emission(val thinking: String = "", val answer: String = "")
     private val opening = listOf("<think>", "<|think|>", "<|thinking|>", "<|assistant_thinking|>")
     private val assistantPrefixes = listOf("<|im_start|>assistant", "<|assistant|>")
-    private val closing = listOf("</think>", "</thinking>", "<|/think|>", "<|/thinking|>", "<|end_think|>", "<|end_thinking|>")
+    private val closing = listOf("<|im_end|></think>", "<|im_end|></thinking>", "</think>", "</thinking>", "<|/think|>", "<|/thinking|>", "<|end_think|>", "<|end_thinking|>")
     private fun earliest(s: String, markers: List<String>): Pair<Int, String>? {
         var best: Pair<Int, String>? = null
         for (m in markers) { val i = s.indexOf(m); if (i >= 0 && (best == null || i < best!!.first)) best = i to m }
@@ -75,7 +75,11 @@ private class ThinkStreamParser {
         }
         return Emission(thinking, answer)
     }
-    fun finish(): Emission { val r = pending.replace("<|im_end|>", "").trim(); pending = ""; return if (mode == Mode.THINKING) Emission(thinking = r) else Emission(answer = r) }
+    fun finish(): Emission {
+        val r = pending.replace("<|im_end|>", "").replace("</think>", "").replace("</thinking>", "").trim()
+        pending = ""
+        return if (mode == Mode.THINKING) Emission(thinking = r) else Emission(answer = r)
+    }
 }
 
 private fun loadConversations(c: Context): List<Conversation> = try {
@@ -116,6 +120,7 @@ class MainActivity : ComponentActivity() {
     var webMode by remember { mutableStateOf(true) }
     var loaded by remember { mutableStateOf(false) }
     var loadError by remember { mutableStateOf("") }
+    var backendInfo by remember { mutableStateOf("Backend unknown") }
     var stats by remember { mutableStateOf(GenerationStats(contextSize = 8192)) }
     var toolStage by remember { mutableStateOf("") }
     var toolElapsedMs by remember { mutableLongStateOf(0L) }
@@ -195,6 +200,7 @@ class MainActivity : ComponentActivity() {
                 } catch (e: Exception) { false to (e.message ?: "model load failed") }
             }
             loaded = result.first; loadError = result.second
+            if (loaded) backendInfo = engine.backendInfo()
             if (result.first) { prefs.edit().putString("target_model", t).apply(); if (draftEnabled) prefs.edit().putString("draft_model", draft.storedPath).apply(); refresh() }
         }
     }
@@ -259,7 +265,7 @@ class MainActivity : ComponentActivity() {
                 Column(Modifier.fillMaxSize().padding(pad)) {
                     Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                         FilterChip(webMode, { webMode = !webMode }, { Text(if (webMode) "Web tools: Auto" else "Web tools: Off") })
-                        Spacer(Modifier.weight(1f)); Text(if (loaded) "Ready" else "Model not loaded")
+                        Spacer(Modifier.weight(1f)); Text(if (loaded) backendInfo else "Model not loaded", style = MaterialTheme.typography.labelSmall)
                     }
                     LazyColumn(state = list, modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 14.dp)) {
                         if (messages.isEmpty()) item { Welcome(target, draft, draftEnabled, loaded) }

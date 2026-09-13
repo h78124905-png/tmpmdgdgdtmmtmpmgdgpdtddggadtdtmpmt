@@ -9,10 +9,12 @@ class LlamaEngine : AutoCloseable {
     private external fun nativeGenerateStream(prompt: String, maxTokens: Int, callback: Any)
     private external fun nativeGenerateToolStep(messagesJson: String, toolsJson: String, maxTokens: Int, callback: Any): String
     private external fun nativeUnloadModel()
+    private external fun nativeGetBackendInfo(): String
 
     fun loadModelFromPath(modelPath: String, contextSize: Int = 8192): Boolean = nativeLoadModelFromPath(modelPath, "", contextSize)
     fun loadModelFromPath(modelPath: String, draftModelPath: String, contextSize: Int = 8192): Boolean = nativeLoadModelFromPath(modelPath, draftModelPath, contextSize)
     fun lastError(): String = nativeGetLastError()
+    fun backendInfo(): String = nativeGetBackendInfo()
     fun generate(prompt: String, maxTokens: Int = 1024): String = nativeGenerate(prompt, maxTokens)
 
     fun generateStream(prompt: String, maxTokens: Int = 1024, onToken: (String) -> Unit, onStats: (Double, Long, Int, Int) -> Unit = { _, _, _, _ -> }): String {

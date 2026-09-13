@@ -268,6 +268,13 @@ Java_com_example_lfmmobile_LlamaEngine_nativeGetLastError(JNIEnv *env, jobject) 
 }
 
 extern "C" JNIEXPORT jstring JNICALL
+Java_com_example_lfmmobile_LlamaEngine_nativeGetBackendInfo(JNIEnv *env, jobject) {
+    std::lock_guard<std::mutex> lock(g_engine.mutex);
+    if (!LFM_VULKAN_AVAILABLE) return utf8_to_jstring(env, "CPU backend");
+    return utf8_to_jstring(env, llama_supports_gpu_offload() ? "Vulkan build / GPU offload available" : "Vulkan build / CPU fallback");
+}
+
+extern "C" JNIEXPORT jstring JNICALL
 Java_com_example_lfmmobile_LlamaEngine_nativeGenerate(JNIEnv *env, jobject, jstring prompt, jint max_tokens) {
     try {
         common_chat_params chat; llama_tokens tokens;

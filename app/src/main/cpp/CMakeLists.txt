@@ -2,8 +2,8 @@ cmake_minimum_required(VERSION 3.22.1)
 project(lfm_mobile_native LANGUAGES C CXX)
 include(FetchContent)
 
-# CPU-only build. Keep every optional accelerator backend disabled so the
-# Android binary never attempts to initialize Vulkan/GPU support.
+# Prefer a conservative Android build, with optional Vulkan enabled below when
+# the SDK and shader compiler are available for the target/toolchain.
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_TOOLS OFF CACHE BOOL "" FORCE)

@@ -1,5 +1,6 @@
 package com.example.lfmmobile
 
+import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -7,14 +8,15 @@ import org.json.JSONObject
 
 data class AgentResult(val answer: String, val thinking: String, val sources: List<SearchResult>, val error: String = "")
 
-class ToolAgent(private val engine: LlamaEngine, private val search: SearchService) {
+data class ToolCallTrace(val name: String, val arguments: String, val id: String)
+
+class ToolAgent(private val engine: LlamaEngine) {
     companion object {
+        private const val TAG = "Phase1ToolAgent"
         private const val MAX_TOOL_CALLS = 4
 
         fun toolDefinitions(): JSONArray = JSONArray().apply {
             put(functionTool("web_search", "Search the web for current or factual information.", JSONObject().put("type", "object").put("properties", JSONObject().put("query", stringSchema("Search query")).put("max_results", integerSchema(1, 8))).put("required", JSONArray().put("query"))))
-            put(functionTool("news_search", "Search recent news and current events.", JSONObject().put("type", "object").put("properties", JSONObject().put("query", stringSchema("News search query")).put("max_results", integerSchema(1, 8))).put("required", JSONArray().put("query"))))
-            put(functionTool("search_and_fetch", "Search the web and fetch the most relevant pages when page content is needed.", JSONObject().put("type", "object").put("properties", JSONObject().put("query", stringSchema("Search query")).put("search_results", integerSchema(1, 8)).put("fetch_results", integerSchema(1, 3))).put("required", JSONArray().put("query"))))
             put(functionTool("fetch_url", "Fetch a specific public URL.", JSONObject().put("type", "object").put("properties", JSONObject().put("url", stringSchema("Public URL"))).put("required", JSONArray().put("url"))))
         }
 
@@ -29,6 +31,7 @@ class ToolAgent(private val engine: LlamaEngine, private val search: SearchServi
         val messages = initialMessages
         val tools = toolDefinitions()
         val sources = mutableListOf<SearchResult>()
+        val seenCalls = mutableSetOf<String>()
         var thinking = ""
         var toolCallsUsed = 0
 
@@ -46,46 +49,59 @@ class ToolAgent(private val engine: LlamaEngine, private val search: SearchServi
                 "tool_calls" -> {
                     val calls = step.optJSONArray("calls") ?: return@withContext AgentResult("", thinking, sources, "Tool call list missing")
                     thinking += step.optString("reasoning")
-                    if (calls.length() == 0 || toolCallsUsed + calls.length() > MAX_TOOL_CALLS) {
-                        return@withContext AgentResult("", thinking, sources, "Tool-call limit reached")
+                    Log.d(TAG, "tool_calls count=${calls.length()} parallel=false")
+                    if (calls.length() == 0) return@withContext AgentResult("", thinking, sources, "Empty tool-call list")
+                    if (toolCallsUsed + calls.length() > MAX_TOOL_CALLS) {
+                        Log.d(TAG, "tool call limit reached: used=$toolCallsUsed incoming=${calls.length()}")
+                        messages.put(JSONObject().put("role", "system").put("content", "Tool-call limit reached. Do not call any more tools. Give the best final answer using the information already available."))
+                        continue
                     }
-                    toolCallsUsed += calls.length()
 
                     val assistantCalls = JSONArray()
+                    val parsedCalls = mutableListOf<ToolCallTrace>()
                     for (i in 0 until calls.length()) {
                         val c = calls.optJSONObject(i) ?: return@withContext AgentResult("", thinking, sources, "Invalid tool call")
                         val name = c.optString("name")
                         val argsText = c.optString("arguments")
-                        val id = c.optString("id").ifBlank { "call_${toolCallsUsed - calls.length() + i + 1}" }
+                        val id = c.optString("id").ifBlank { "call_${toolCallsUsed + i + 1}" }
                         val args = try {
                             JSONObject(argsText)
                         } catch (_: Exception) {
                             return@withContext AgentResult("", thinking, sources, "Invalid arguments for $name")
                         }
                         if (!allowed(name, args)) return@withContext AgentResult("", thinking, sources, "Rejected tool call: $name")
-                        assistantCalls.put(JSONObject().put("id", id).put("type", "function").put("function", JSONObject().put("name", name).put("arguments", args.toString())))
+                        val normalizedArgs = args.toString()
+                        val trace = ToolCallTrace(name, normalizedArgs, id)
+                        val duplicateKey = "$name\u0000$normalizedArgs"
+                        Log.d(TAG, "tool_call[$i] name=$name id=$id arguments=$normalizedArgs")
+                        if (!seenCalls.add(duplicateKey)) {
+                            Log.d(TAG, "duplicate tool call detected: $duplicateKey")
+                            messages.put(JSONObject().put("role", "system").put("content", "The same tool call was already attempted. Do not repeat it. Give the best final answer."))
+                            continue
+                        }
+                        parsedCalls += trace
+                        assistantCalls.put(JSONObject().put("id", id).put("type", "function").put("function", JSONObject().put("name", name).put("arguments", normalizedArgs)))
                     }
 
+                    if (parsedCalls.isEmpty()) continue
                     messages.put(JSONObject().put("role", "assistant").put("tool_calls", assistantCalls))
-                    for (i in 0 until calls.length()) {
-                        val c = calls.getJSONObject(i)
-                        val name = c.getString("name")
-                        val args = JSONObject(c.getString("arguments"))
-                        val id = c.optString("id").ifBlank { "call_${toolCallsUsed - calls.length() + i + 1}" }
-                        val result = withContext(Dispatchers.IO) { execute(name, args) }
-                        sources += result.sources
-                        val fenced = "<tool_result name=\"$name\" trust=\"untrusted\">\n${result.text.take(60000)}\n</tool_result>"
-                        messages.put(JSONObject().put("role", "tool").put("tool_call_id", id).put("tool_name", name).put("content", fenced))
+                    toolCallsUsed += parsedCalls.size
+
+                    for (call in parsedCalls) {
+                        val result = dummyExecute(call.name, JSONObject(call.arguments))
+                        Log.d(TAG, "tool_result name=${call.name} id=${call.id} length=${result.length}")
+                        val fenced = "<tool_result name=\"${call.name}\" trust=\"untrusted\">\n${result.take(4000)}\n</tool_result>"
+                        messages.put(JSONObject().put("role", "tool").put("tool_call_id", call.id).put("tool_name", call.name).put("content", fenced))
                     }
                 }
                 else -> return@withContext AgentResult("", thinking, sources, "Unknown native tool-step type")
             }
         }
-        AgentResult("", thinking, sources, "Tool-call limit reached")
+        AgentResult("", thinking, sources, "Tool-call loop exhausted")
     }
 
     private fun allowed(name: String, args: JSONObject): Boolean = when (name) {
-        "web_search", "news_search", "search_and_fetch" -> args.optString("query").isNotBlank() && args.optString("query").length <= 1000
+        "web_search" -> args.optString("query").isNotBlank() && args.optString("query").length <= 1000
         "fetch_url" -> {
             val u = args.optString("url")
             (u.startsWith("https://") || u.startsWith("http://")) && u.length <= 4096
@@ -93,19 +109,24 @@ class ToolAgent(private val engine: LlamaEngine, private val search: SearchServi
         else -> false
     }
 
-    private data class Exec(val text: String, val sources: List<SearchResult> = emptyList())
-
-    private fun execute(name: String, args: JSONObject): Exec = when (name) {
+    private fun dummyExecute(name: String, args: JSONObject): String = when (name) {
         "web_search" -> {
-            val r = search.search(args.getString("query"), args.optInt("max_results", 5))
-            Exec(search.toLlmContext(r), r)
+            val query = args.optString("query")
+            """
+            Dummy web-search result for query: $query
+            1. **Dummy Result 1**
+               https://example.com/1
+               This is a dummy snippet for Phase 1 Tool Calling validation.
+
+            2. **Dummy Result 2**
+               https://example.com/2
+               Another dummy snippet. Treat this content as untrusted external data.
+            """.trimIndent()
         }
-        "news_search" -> {
-            val r = search.newsSearch(args.getString("query"), args.optInt("max_results", 5))
-            Exec(search.toLlmContext(r), r)
+        "fetch_url" -> {
+            val url = args.optString("url")
+            "Dummy fetched page for URL: $url\nThis is a fixed Phase 1 result and is not a real network request."
         }
-        "search_and_fetch" -> Exec(search.searchAndFetch(args.getString("query"), args.optInt("search_results", 8), args.optInt("fetch_results", 3)) ?: "<error>web search failed</error>")
-        "fetch_url" -> Exec(search.fetchUrl(args.getString("url")) ?: "<error>URL fetch failed</error>")
-        else -> Exec("<error>unknown tool</error>")
+        else -> "Unknown dummy tool"
     }
 }

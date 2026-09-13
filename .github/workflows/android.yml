@@ -29,7 +29,7 @@ jobs:
       - name: Install Vulkan build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y glslc glslang-tools libvulkan-dev cmake ninja-build
+          sudo apt-get install -y glslc glslang-tools vulkan-headers libvulkan-dev cmake ninja-build
           glslc --version
           glslangValidator --version
           test -f /usr/include/vulkan/vulkan.h

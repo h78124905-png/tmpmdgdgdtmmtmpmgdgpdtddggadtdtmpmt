@@ -1,5 +1,5 @@
 {
-  "name": "lfm-mobile-free-search-mcp-bridge",
+  "name": "lfm-mobile-fast-web-search-bridge",
   "private": true,
   "type": "module",
   "engines": { "node": ">=22" },

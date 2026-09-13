@@ -33,10 +33,14 @@ class ToolAgent(private val engine: LlamaEngine, @Suppress("UNUSED_PARAMETER") l
         val seenCalls = mutableSetOf<String>()
         var thinking = ""
         var toolCallsUsed = 0
+        var iterations = 0
 
-        repeat(MAX_TOOL_CALLS + 1) {
+        while (iterations <= MAX_TOOL_CALLS) {
+            iterations++
             val raw = engine.generateToolStep(messages.toString(), tools.toString(), maxTokens.coerceAtMost(1024))
-            val step = try { JSONObject(raw) } catch (e: Exception) {
+            val step = try {
+                JSONObject(raw)
+            } catch (e: Exception) {
                 return@withContext AgentResult("", thinking, sources, "Invalid native tool-step response: ${e.message}")
             }
 
@@ -48,6 +52,7 @@ class ToolAgent(private val engine: LlamaEngine, @Suppress("UNUSED_PARAMETER") l
                     thinking += step.optString("reasoning")
                     Log.d(TAG, "tool_calls count=${calls.length()} parallel=false")
                     if (calls.length() == 0) return@withContext AgentResult("", thinking, sources, "Empty tool-call list")
+
                     if (toolCallsUsed + calls.length() > MAX_TOOL_CALLS) {
                         Log.d(TAG, "tool call limit reached: used=$toolCallsUsed incoming=${calls.length()}")
                         messages.put(JSONObject().put("role", "system").put("content", "Tool-call limit reached. Do not call any more tools. Give the best final answer using the information already available."))
@@ -61,7 +66,9 @@ class ToolAgent(private val engine: LlamaEngine, @Suppress("UNUSED_PARAMETER") l
                         val name = c.optString("name")
                         val argsText = c.optString("arguments")
                         val id = c.optString("id").ifBlank { "call_${toolCallsUsed + i + 1}" }
-                        val args = try { JSONObject(argsText) } catch (_: Exception) {
+                        val args = try {
+                            JSONObject(argsText)
+                        } catch (_: Exception) {
                             return@withContext AgentResult("", thinking, sources, "Invalid arguments for $name")
                         }
                         if (!allowed(name, args)) return@withContext AgentResult("", thinking, sources, "Rejected tool call: $name")

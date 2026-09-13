@@ -20,9 +20,9 @@ class WebSearchService {
     companion object { private const val TAG = "WebSearchService" }
 
     private val client = OkHttpClient.Builder()
-        .connectTimeout(10, TimeUnit.SECONDS)
-        .readTimeout(15, TimeUnit.SECONDS)
-        .writeTimeout(10, TimeUnit.SECONDS)
+        .connectTimeout(5, TimeUnit.SECONDS)
+        .readTimeout(8, TimeUnit.SECONDS)
+        .writeTimeout(5, TimeUnit.SECONDS)
         .followRedirects(true)
         .followSslRedirects(true)
         .build()
@@ -149,7 +149,7 @@ class WebSearchService {
         append("<tool_result name=\"fetch_url\" trust=\"untrusted\">\n")
         append("URL: ").append(result.url).append('\n')
         if (result.title.isNotBlank()) append("Title: ").append(result.title).append('\n')
-        append(result.text.take(6000)).append('\n')
+        append(result.text.take(4000)).append('\n')
         append("</tool_result>")
     }
 }

@@ -41,10 +41,22 @@ class ToolAgent(private val engine: LlamaEngine, private val webSearch: WebSearc
                     if (rawCall != null) {
                         val query = rawCall.groupValues[1].trim()
                         val maxResults = rawCall.groupValues.getOrNull(2)?.toIntOrNull()?.coerceIn(1, 8) ?: 5
+                        onProgress("searching", 0L)
                         val found = webSearch.search(query, maxResults)
                         sources += found
+                        onProgress("search_result_ready", 0L)
                         messages.put(JSONObject().put("role", "assistant").put("tool_calls", JSONArray().put(JSONObject().put("id", "raw_call_1").put("type", "function").put("function", JSONObject().put("name", "web_search").put("arguments", JSONObject().put("query", query).put("max_results", maxResults).toString())))))
                         messages.put(JSONObject().put("role", "tool").put("tool_call_id", "raw_call_1").put("tool_name", "web_search").put("content", webSearch.formatToolResult(found)))
+                        continue
+                    }
+                    val rawFetch = Regex("<\\|tool_call_start\\|>\\s*\\[\\s*fetch_url\\(url=['\"](https?://[^'\"]+)['\"]\\)\\s*\\]\\s*<\\|tool_call_end\\|>", RegexOption.DOT_MATCHES_ALL).find(rawContent)
+                    if (rawFetch != null) {
+                        val url = rawFetch.groupValues[1]
+                        onProgress("fetching", 0L)
+                        val fetched = webSearch.fetchUrl(url)
+                        onProgress("search_result_ready", 0L)
+                        messages.put(JSONObject().put("role", "assistant").put("tool_calls", JSONArray().put(JSONObject().put("id", "raw_fetch_1").put("type", "function").put("function", JSONObject().put("name", "fetch_url").put("arguments", JSONObject().put("url", url).toString())))))
+                        messages.put(JSONObject().put("role", "tool").put("tool_call_id", "raw_fetch_1").put("tool_name", "fetch_url").put("content", webSearch.formatFetchResult(fetched)))
                         continue
                     }
                     return@withContext AgentResult(cleanModelText(rawContent), thinking + cleanModelText(step.optString("reasoning")), sources, timing = lastTiming)
@@ -71,7 +83,7 @@ class ToolAgent(private val engine: LlamaEngine, private val webSearch: WebSearc
                         val args = JSONObject(call.arguments)
                         val result = try {
                             when (call.name) {
-                                "web_search" -> { val found = webSearch.search(args.optString("query"), args.optInt("max_results", 5).coerceIn(1, 8)); sources += found; webSearch.formatToolResult(found) }
+                                "web_search" -> { onProgress("searching", 0L); val found = webSearch.search(args.optString("query"), args.optInt("max_results", 5).coerceIn(1, 8)); sources += found; onProgress("search_result_ready", 0L); webSearch.formatToolResult(found) }
                                 "fetch_url" -> webSearch.formatFetchResult(webSearch.fetchUrl(args.optString("url")))
                                 else -> "Unknown tool"
                             }

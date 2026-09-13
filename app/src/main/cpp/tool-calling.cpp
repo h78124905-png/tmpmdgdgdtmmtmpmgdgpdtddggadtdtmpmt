@@ -128,15 +128,18 @@ Java_com_example_lfmmobile_LlamaEngine_nativeGenerateToolStep(JNIEnv * env, jobj
         inputs.parallel_tool_calls = false;
         inputs.add_generation_prompt = true;
         inputs.use_jinja = true;
-        // Tool selection should be a short routing decision. Keep thinking for
-        // the final answer, but do not spend CPU time reasoning before search.
-        inputs.enable_thinking = false;
+        // Preserve the model's native think -> tool-call -> result -> answer
+        // protocol. The Android layer streams the thinking separately.
+        inputs.enable_thinking = true;
         const common_chat_params chat = common_chat_templates_apply(templates.get(), inputs);
         if (chat.prompt.empty()) return tool_result(env, make_error("empty chat prompt"));
         report_progress(env, callback, "tokenize_tool_prompt", 0);
         const llama_tokens input = common_tokenize(g_engine.context, chat.prompt, true, true);
         if (input.empty()) return tool_result(env, make_error("tool prompt tokenization failed"));
-        auto progress = [&](const char * s) { report_progress(env, callback, s, 0); };
+        auto progress = [&](const char * s) {
+            if (std::string(s) == "sampler_init") report_progress(env, callback, "tool_thinking", 0);
+            else report_progress(env, callback, s, 0);
+        };
         const std::string generated = generate_chat_impl(env, chat, input, std::max(1, std::min((int)max_tokens, 384)), callback, progress);
         if (generated.rfind("[", 0) == 0) return tool_result(env, make_error(generated));
         report_progress(env, callback, "parse_generated_tool_call", 0);

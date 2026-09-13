@@ -19,9 +19,21 @@ set(GGML_LLAMAFILE OFF CACHE BOOL "" FORCE)
 set(GGML_NATIVE OFF CACHE BOOL "" FORCE)
 set(GGML_LTO ON CACHE BOOL "" FORCE)
 
-# Explicitly disable all GPU / accelerator backends for this Android target.
+# Enable Vulkan only when the build environment contains both the Vulkan SDK
+# and shader compiler. Android Mali devices can use this path, but CI and
+# devices without a usable driver must keep working with CPU inference.
+find_package(Vulkan QUIET)
+find_program(LFM_GLSLC_EXECUTABLE glslc)
+if (Vulkan_FOUND AND LFM_GLSLC_EXECUTABLE)
+    set(GGML_VULKAN ON CACHE BOOL "" FORCE)
+    set(LFM_VULKAN_AVAILABLE ON)
+else()
+    set(GGML_VULKAN OFF CACHE BOOL "" FORCE)
+    set(LFM_VULKAN_AVAILABLE OFF)
+endif()
+
+# Explicitly disable unsupported GPU / accelerator backends for this Android target.
 set(GGML_CUDA OFF CACHE BOOL "" FORCE)
-set(GGML_VULKAN OFF CACHE BOOL "" FORCE)
 set(GGML_OPENCL OFF CACHE BOOL "" FORCE)
 set(GGML_METAL OFF CACHE BOOL "" FORCE)
 set(GGML_SYCL OFF CACHE BOOL "" FORCE)
@@ -40,5 +52,6 @@ FetchContent_MakeAvailable(llama_cpp)
 add_library(lfm_native SHARED tool-calling.cpp)
 target_compile_features(lfm_native PRIVATE cxx_std_17)
 target_compile_options(lfm_native PRIVATE -O3 -fvisibility=hidden)
+target_compile_definitions(lfm_native PRIVATE LFM_VULKAN_AVAILABLE=$<BOOL:${LFM_VULKAN_AVAILABLE}>)
 target_include_directories(lfm_native PRIVATE ${llama_cpp_SOURCE_DIR}/include ${llama_cpp_SOURCE_DIR}/common)
 target_link_libraries(lfm_native PRIVATE llama-common llama log android)

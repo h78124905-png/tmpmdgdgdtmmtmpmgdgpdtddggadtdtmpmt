@@ -111,12 +111,12 @@ class MainActivity : ComponentActivity() {
     var prompt by remember { mutableStateOf("") }
     var generating by remember { mutableStateOf(false) }
     var showModels by remember { mutableStateOf(false) }
-    var contextSize by remember { mutableIntStateOf(2048) }
-    var maxTokens by remember { mutableIntStateOf(512) }
+    var contextSize by remember { mutableIntStateOf(8192) }
+    var maxTokens by remember { mutableIntStateOf(1024) }
     var webMode by remember { mutableStateOf(true) }
     var loaded by remember { mutableStateOf(false) }
     var loadError by remember { mutableStateOf("") }
-    var stats by remember { mutableStateOf(GenerationStats(contextSize = 2048)) }
+    var stats by remember { mutableStateOf(GenerationStats(contextSize = 8192)) }
     var toolStage by remember { mutableStateOf("") }
     var toolElapsedMs by remember { mutableLongStateOf(0L) }
     var toolProgressStartedAt by remember { mutableLongStateOf(0L) }

@@ -10,12 +10,12 @@ class LlamaEngine : AutoCloseable {
     private external fun nativeGenerateToolStep(messagesJson: String, toolsJson: String, maxTokens: Int, callback: Any): String
     private external fun nativeUnloadModel()
 
-    fun loadModelFromPath(modelPath: String, contextSize: Int = 4096): Boolean = nativeLoadModelFromPath(modelPath, "", contextSize)
-    fun loadModelFromPath(modelPath: String, draftModelPath: String, contextSize: Int = 4096): Boolean = nativeLoadModelFromPath(modelPath, draftModelPath, contextSize)
+    fun loadModelFromPath(modelPath: String, contextSize: Int = 8192): Boolean = nativeLoadModelFromPath(modelPath, "", contextSize)
+    fun loadModelFromPath(modelPath: String, draftModelPath: String, contextSize: Int = 8192): Boolean = nativeLoadModelFromPath(modelPath, draftModelPath, contextSize)
     fun lastError(): String = nativeGetLastError()
-    fun generate(prompt: String, maxTokens: Int = 128): String = nativeGenerate(prompt, maxTokens)
+    fun generate(prompt: String, maxTokens: Int = 1024): String = nativeGenerate(prompt, maxTokens)
 
-    fun generateStream(prompt: String, maxTokens: Int = 128, onToken: (String) -> Unit, onStats: (Double, Long, Int, Int) -> Unit = { _, _, _, _ -> }): String {
+    fun generateStream(prompt: String, maxTokens: Int = 1024, onToken: (String) -> Unit, onStats: (Double, Long, Int, Int) -> Unit = { _, _, _, _ -> }): String {
         val callback = object {
             @Suppress("unused") fun onToken(text: String) { onToken(text) }
             @Suppress("unused") fun onStats(tokPerSec: Double, elapsedMs: Long, contextUsed: Int, contextSize: Int) { onStats(tokPerSec, elapsedMs, contextUsed, contextSize) }

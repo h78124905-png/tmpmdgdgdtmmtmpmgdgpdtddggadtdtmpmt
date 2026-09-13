@@ -237,7 +237,11 @@ Java_com_example_lfmmobile_LlamaEngine_nativeLoadModelFromPath(JNIEnv *env, jobj
         unload_locked();
         if (!g_engine.backend_initialized) { llama_backend_init(); g_engine.backend_initialized = true; }
         llama_model_params mp = llama_model_default_params();
+#if LFM_VULKAN_AVAILABLE
+        mp.n_gpu_layers = 999;
+#else
         mp.n_gpu_layers = 0;
+#endif
         llama_model *model = llama_model_load_from_file(path.c_str(), mp);
         if (!model) { set_error("llama_model_load_from_file failed"); return JNI_FALSE; }
         llama_context_params cp = llama_context_default_params();
@@ -251,7 +255,7 @@ Java_com_example_lfmmobile_LlamaEngine_nativeLoadModelFromPath(JNIEnv *env, jobj
         llama_context *ctx = llama_init_from_model(model, cp);
         if (!ctx) { llama_model_free(model); set_error("llama_init_from_model failed"); return JNI_FALSE; }
         g_engine.model = model; g_engine.context = ctx; g_engine.vocab = llama_model_get_vocab(model); g_engine.last_error.clear();
-        LOGI("CPU-only engine ready: threads=%d context=%d", threads, cp.n_ctx);
+        LOGI("engine ready: backend=%s threads=%d context=%d", LFM_VULKAN_AVAILABLE ? "Vulkan/CPU fallback" : "CPU", threads, cp.n_ctx);
         return JNI_TRUE;
     } catch (const std::exception &e) { set_error(std::string("load exception: ") + e.what()); return JNI_FALSE; }
     catch (...) { set_error("load exception: unknown"); return JNI_FALSE; }

@@ -34,6 +34,7 @@ class WebSearchService {
 
         val engines = listOf(
             "duckduckgo" to "https://html.duckduckgo.com/html/".toHttpUrl().newBuilder().addQueryParameter("q", q).build().toString(),
+            "duckduckgo_lite" to "https://lite.duckduckgo.com/lite/".toHttpUrl().newBuilder().addQueryParameter("q", q).build().toString(),
             "bing" to "https://www.bing.com/search".toHttpUrl().newBuilder().addQueryParameter("q", q).build().toString()
         )
         var lastError = "SEARCH_EMPTY"
@@ -53,12 +54,12 @@ class WebSearchService {
                 lastError = "SEARCH_HTTP_ERROR:$engine:${response.statusCode}"
                 continue
             }
-            if (!response.contentType.lowercase(Locale.ROOT).contains("html")) {
+            if (response.contentType.isNotBlank() && !response.contentType.lowercase(Locale.ROOT).contains("html")) {
                 lastError = "SEARCH_CONTENT_TYPE_ERROR:$engine:${response.contentType}"
                 continue
             }
             val parsed = when (engine) {
-                "duckduckgo" -> parseDdg(response.body)
+                "duckduckgo", "duckduckgo_lite" -> parseDdg(response.body)
                 else -> parseBing(response.body)
             }
             Log.i(TAG, "[$engine] parsedResults=${parsed.size}")
@@ -96,8 +97,8 @@ class WebSearchService {
         }
     }
 
-    private fun parseDdg(html: String): List<SearchResult> = Jsoup.parse(html).select(".result").mapNotNull { result ->
-        val link = result.selectFirst(".result__a") ?: return@mapNotNull null
+    private fun parseDdg(html: String): List<SearchResult> = Jsoup.parse(html).select(".result, tr.result, .result-link").mapNotNull { result ->
+        val link = result.selectFirst(".result__a, a.result-link, a[href^=http]") ?: return@mapNotNull null
         val title = link.text().trim(); val url = normalizeUrl(link.attr("href")) ?: return@mapNotNull null
         if (title.isBlank()) null else SearchResult(title, url, result.selectFirst(".result__snippet")?.text()?.trim().orEmpty().take(300))
     }

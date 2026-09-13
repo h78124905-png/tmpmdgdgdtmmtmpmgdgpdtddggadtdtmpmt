@@ -192,6 +192,12 @@ std::string generate_chat_impl(JNIEnv *env, const common_chat_params &, const ll
             if (progress_cb) {
                 const auto elapsed = std::max<int64_t>(1, std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - prefill_start).count());
                 progress_cb(("prefill " + std::to_string(prefill_tokens) + "/" + std::to_string(input.size()) + " tokens " + std::to_string(elapsed) + "ms").c_str());
+                if (callback && on_stats) {
+                    env->CallVoidMethod(callback, on_stats,
+                        (jdouble)(prefill_tokens * 1000.0 / elapsed), (jlong)elapsed,
+                        (jint)prefill_tokens, (jint)llama_n_ctx(g_engine.context));
+                    if (env->ExceptionCheck()) env->ExceptionClear();
+                }
             }
         }
     }

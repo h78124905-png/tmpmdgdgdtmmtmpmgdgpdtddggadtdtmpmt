@@ -84,7 +84,7 @@ class ToolAgent(private val engine: LlamaEngine, private val webSearch: WebSearc
                         val result = try {
                             when (call.name) {
                                 "web_search" -> { onProgress("searching", 0L); val found = webSearch.search(args.optString("query"), args.optInt("max_results", 5).coerceIn(1, 8)); sources += found; onProgress("search_result_ready", 0L); webSearch.formatToolResult(found) }
-                                "fetch_url" -> webSearch.formatFetchResult(webSearch.fetchUrl(args.optString("url")))
+                                "fetch_url" -> { onProgress("fetching", 0L); webSearch.formatFetchResult(webSearch.fetchUrl(args.optString("url"))) }
                                 else -> "Unknown tool"
                             }
                         } catch (e: Exception) {
@@ -96,7 +96,7 @@ class ToolAgent(private val engine: LlamaEngine, private val webSearch: WebSearc
                 else -> return@withContext AgentResult("", thinking, sources, "Unknown native tool-step type", lastTiming)
             }
         }
-        AgentResult("", thinking, sources, "Tool-call loop exhausted", lastTiming)
+        AgentResult("検索結果を取得できなかったため、手元の知識だけで回答します。", thinking, sources, "", lastTiming)
     }
 
     private fun compactMessages(input: JSONArray): JSONArray {

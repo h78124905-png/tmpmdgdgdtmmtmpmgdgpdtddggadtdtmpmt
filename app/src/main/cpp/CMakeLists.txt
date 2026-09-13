@@ -23,7 +23,8 @@ set(GGML_LTO ON CACHE BOOL "" FORCE)
 # CMAKE_PREFIX_PATH into package search paths. Point llama.cpp at the config
 # installed by CI explicitly when it is available.
 if (DEFINED ENV{CMAKE_PREFIX_PATH})
-    set(_lfm_spirv_root "$ENV{CMAKE_PREFIX_PATH}")
+    set(_lfm_prefixes $ENV{CMAKE_PREFIX_PATH})
+    list(GET _lfm_prefixes 0 _lfm_spirv_root)
     if (EXISTS "${_lfm_spirv_root}/share/cmake/SPIRV-Headers/SPIRV-HeadersConfig.cmake")
         set(SPIRV-Headers_DIR "${_lfm_spirv_root}/share/cmake/SPIRV-Headers" CACHE PATH "" FORCE)
         message(STATUS "LFM: SPIRV-Headers_DIR=${SPIRV-Headers_DIR}")

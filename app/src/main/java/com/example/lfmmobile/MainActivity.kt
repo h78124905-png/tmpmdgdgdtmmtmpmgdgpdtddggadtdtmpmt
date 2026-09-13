@@ -215,13 +215,13 @@ class MainActivity : ComponentActivity() {
     suspend fun directSend(q: String) {
         updateToolProgress("prompt_prepare", 0L)
         val conv = buildString {
-            append("You are a helpful text-only local assistant. Answer naturally and accurately.\n\nConversation:\n")
+            append("You are a concise Japanese local assistant. Answer naturally and accurately. Do not reveal internal reasoning or control tokens.\n\nConversation:\n")
             messages.dropLast(1).forEach { append(if (it.user) "User: " else "Assistant: ").append(it.text).append('\n') }
             append("User: ").append(q).append("\nAssistant:")
         }
         val channel = Channel<StreamEvent>(Channel.UNLIMITED)
         updateToolProgress("generating", 0L)
-        val job = scope.launch(Dispatchers.Default) { try { engine.generateStream(conv, maxTokens, { channel.trySend(StreamEvent.Token(it)) }, { a, b, c, d -> channel.trySend(StreamEvent.Stats(GenerationStats(a, b, c, d))) }) } finally { channel.close() } }
+        val job = scope.launch(Dispatchers.Default) { try { engine.generateStream(conv, maxTokens.coerceAtMost(384), { channel.trySend(StreamEvent.Token(it)) }, { a, b, c, d -> channel.trySend(StreamEvent.Stats(GenerationStats(a, b, c, d))) }) } finally { channel.close() } }
         val parser = ThinkStreamParser()
         for (event in channel) when (event) {
             is StreamEvent.Token -> { val e = parser.consume(event.text); if (e.thinking.isNotEmpty() || e.answer.isNotEmpty()) { val m = messages.lastOrNull() ?: Message(false, ""); messages = messages.dropLast(1) + m.copy(text = m.text + e.answer, thinking = m.thinking + e.thinking) } }
@@ -300,7 +300,7 @@ class MainActivity : ComponentActivity() {
                     }
                 } }
             }
-            Row(verticalAlignment = Alignment.CenterVertically) { Text("DSpark draft", fontWeight = FontWeight.SemiBold); Spacer(Modifier.weight(1f)); Switch(draftEnabled, { draftEnabled = it; loaded = false }) }
+            Row(verticalAlignment = Alignment.CenterVertically) { Text("DSpark draft (safe target-only mode)", fontWeight = FontWeight.SemiBold); Spacer(Modifier.weight(1f)); Switch(draftEnabled, { draftEnabled = it; loaded = false }) }
             TextButton({ pickDraft.launch(arrayOf("application/octet-stream", "application/x-gguf", "*/*")) }) { Text("Add draft model") }
             OutlinedTextField(contextSize.toString(), { it.toIntOrNull()?.coerceIn(512, 131072)?.let { v -> contextSize = v; loaded = false } }, label = { Text("Context size") }, singleLine = true)
             OutlinedTextField(maxTokens.toString(), { it.toIntOrNull()?.coerceIn(1, 8192)?.let { v -> maxTokens = v } }, label = { Text("Max tokens") }, singleLine = true)

@@ -270,8 +270,8 @@ Java_com_example_lfmmobile_LlamaEngine_nativeGetLastError(JNIEnv *env, jobject) 
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_example_lfmmobile_LlamaEngine_nativeGetBackendInfo(JNIEnv *env, jobject) {
     std::lock_guard<std::mutex> lock(g_engine.mutex);
-    if (!LFM_VULKAN_AVAILABLE) return utf8_to_jstring(env, "CPU backend");
-    return utf8_to_jstring(env, llama_supports_gpu_offload() ? "Vulkan build / GPU offload available" : "Vulkan build / CPU fallback");
+    if (!LFM_VULKAN_AVAILABLE) return utf8_to_jstring(env, "CPU backend / DSpark target-only");
+    return utf8_to_jstring(env, llama_supports_gpu_offload() ? "Vulkan build / GPU offload available / DSpark target-only" : "Vulkan build / CPU fallback / DSpark target-only");
 }
 
 extern "C" JNIEXPORT jstring JNICALL

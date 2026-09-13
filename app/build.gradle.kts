@@ -15,7 +15,9 @@ android {
 
     defaultConfig {
         applicationId = "com.example.lfmmobile"
-        minSdk = 26
+        // ggml-vulkan uses vkGetPhysicalDeviceFeatures2, exported by Android's
+        // Vulkan loader from API 29 onward.
+        minSdk = 29
         targetSdk = 36
         versionCode = 1
         versionName = "0.1.0"

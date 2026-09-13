@@ -42,6 +42,7 @@ jobs:
             -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/vulkan-headers" -DVULKAN_HEADERS_ENABLE_TESTS=OFF
           cmake --install "$RUNNER_TEMP/vulkan-headers-build"
           echo "CMAKE_PREFIX_PATH=$RUNNER_TEMP/spirv-headers;$RUNNER_TEMP/vulkan-headers" >> "$GITHUB_ENV"
+          echo "LFM_VULKAN_HEADERS_ROOT=$RUNNER_TEMP/vulkan-headers" >> "$GITHUB_ENV"
 
       - name: Install Android SDK components
         run: |

@@ -30,6 +30,13 @@ if (DEFINED ENV{CMAKE_PREFIX_PATH})
         message(STATUS "LFM: SPIRV-Headers_DIR=${SPIRV-Headers_DIR}")
     endif()
 endif()
+if (DEFINED ENV{LFM_VULKAN_HEADERS_ROOT})
+    set(_lfm_vulkan_include "$ENV{LFM_VULKAN_HEADERS_ROOT}/include")
+    if (EXISTS "${_lfm_vulkan_include}/vulkan/vulkan.hpp")
+        include_directories(SYSTEM "${_lfm_vulkan_include}")
+        message(STATUS "LFM: Vulkan C++ headers=${_lfm_vulkan_include}")
+    endif()
+endif()
 
 # Enable Vulkan only when the build environment contains both the Vulkan SDK
 # and shader compiler. Android Mali devices can use this path, but CI and

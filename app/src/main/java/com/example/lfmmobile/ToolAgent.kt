@@ -35,7 +35,20 @@ class ToolAgent(private val engine: LlamaEngine, private val webSearch: WebSearc
             val step = try { JSONObject(raw) } catch (e: Exception) { return@withContext AgentResult("", thinking, sources, "Invalid native tool-step response: ${e.message}", lastTiming) }
             step.optJSONObject("timing")?.let { lastTiming = it.toString(); Log.i(TAG, "[tool][timing] $lastTiming") }
             when (step.optString("type")) {
-                "final" -> return@withContext AgentResult(step.optString("content"), thinking + step.optString("reasoning"), sources, timing = lastTiming)
+                "final" -> {
+                    val rawContent = step.optString("content")
+                    val rawCall = Regex("<\\|tool_call_start\\|>\\s*\\[\\s*web_search\\(query=['\"](.*?)['\"](?:,\\s*max_results=([0-9]+))?\\)\\s*\\]\\s*<\\|tool_call_end\\|>", RegexOption.DOT_MATCHES_ALL).find(rawContent)
+                    if (rawCall != null) {
+                        val query = rawCall.groupValues[1].trim()
+                        val maxResults = rawCall.groupValues.getOrNull(2)?.toIntOrNull()?.coerceIn(1, 8) ?: 5
+                        val found = webSearch.search(query, maxResults)
+                        sources += found
+                        messages.put(JSONObject().put("role", "assistant").put("tool_calls", JSONArray().put(JSONObject().put("id", "raw_call_1").put("type", "function").put("function", JSONObject().put("name", "web_search").put("arguments", JSONObject().put("query", query).put("max_results", maxResults).toString())))))
+                        messages.put(JSONObject().put("role", "tool").put("tool_call_id", "raw_call_1").put("tool_name", "web_search").put("content", webSearch.formatToolResult(found)))
+                        continue
+                    }
+                    return@withContext AgentResult(cleanModelText(rawContent), thinking + cleanModelText(step.optString("reasoning")), sources, timing = lastTiming)
+                }
                 "error" -> return@withContext AgentResult("", thinking, sources, step.optString("error", "tool generation failed"), lastTiming)
                 "tool_calls" -> {
                     val calls = step.optJSONArray("calls") ?: return@withContext AgentResult("", thinking, sources, "Tool call list missing", lastTiming)
@@ -90,6 +103,13 @@ class ToolAgent(private val engine: LlamaEngine, private val webSearch: WebSearc
         }
         return output
     }
+
+    private fun cleanModelText(value: String): String = value
+        .replace(Regex("<think>.*?</think>", RegexOption.DOT_MATCHES_ALL), "")
+        .replace(Regex("<\\|think\\|>.*?<\\|/think\\|>", RegexOption.DOT_MATCHES_ALL), "")
+        .replace("<|im_start|>assistant", "")
+        .replace("<|im_end|>", "")
+        .trim()
 
     private fun allowed(name: String, args: JSONObject): Boolean = when (name) {
         "web_search" -> args.optString("query").isNotBlank() && args.optString("query").length <= 1000

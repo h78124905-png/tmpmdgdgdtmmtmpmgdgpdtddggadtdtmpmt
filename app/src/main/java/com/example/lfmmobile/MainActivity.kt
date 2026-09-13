@@ -43,6 +43,7 @@ private class ThinkStreamParser {
     private var pending = ""
     data class Emission(val thinking: String = "", val answer: String = "")
     private val opening = listOf("<think>", "<|think|>", "<|thinking|>", "<|assistant_thinking|>")
+    private val assistantPrefixes = listOf("<|im_start|>assistant", "<|assistant|>")
     private val closing = listOf("</think>", "</thinking>", "<|/think|>", "<|/thinking|>", "<|end_think|>", "<|end_thinking|>")
     private fun earliest(s: String, markers: List<String>): Pair<Int, String>? {
         var best: Pair<Int, String>? = null
@@ -56,6 +57,7 @@ private class ThinkStreamParser {
     }
     fun consume(chunk: String): Emission {
         pending += chunk
+        for (prefix in assistantPrefixes) if (pending.startsWith(prefix)) pending = pending.removePrefix(prefix)
         var thinking = ""
         var answer = ""
         while (pending.isNotEmpty()) {
@@ -73,7 +75,7 @@ private class ThinkStreamParser {
         }
         return Emission(thinking, answer)
     }
-    fun finish(): Emission { val r = pending; pending = ""; return if (mode == Mode.THINKING) Emission(thinking = r) else Emission(answer = r) }
+    fun finish(): Emission { val r = pending.replace("<|im_end|>", "").trim(); pending = ""; return if (mode == Mode.THINKING) Emission(thinking = r) else Emission(answer = r) }
 }
 
 private fun loadConversations(c: Context): List<Conversation> = try {

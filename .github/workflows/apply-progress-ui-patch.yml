@@ -1,0 +1,53 @@
+name: Apply progress UI patch
+on:
+  push:
+    paths:
+      - .progress-ui-patch-trigger
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+      - name: Patch normal-generation progress
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path("app/src/main/java/com/example/lfmmobile/MainActivity.kt")
+          s = p.read_text(encoding="utf-8")
+          replacements = [
+              (
+                  "    suspend fun directSend(q: String) {\n        val conv = buildString {",
+                  "    suspend fun directSend(q: String) {\n        updateToolProgress(\"prompt_prepare\", 0L)\n        val conv = buildString {"
+              ),
+              (
+                  "        val channel = Channel<StreamEvent>(Channel.UNLIMITED)\n        val job = scope.launch(Dispatchers.Default) {",
+                  "        val channel = Channel<StreamEvent>(Channel.UNLIMITED)\n        updateToolProgress(\"generating\", 0L)\n        val job = scope.launch(Dispatchers.Default) {"
+              ),
+              (
+                  "        job.join()\n        val e = parser.finish()",
+                  "        job.join()\n        updateToolProgress(\"finalizing\", stats.elapsedMs)\n        val e = parser.finish()"
+              )
+          ]
+          for old, new in replacements:
+              if old in s:
+                  s = s.replace(old, new, 1)
+          p.write_text(s, encoding="utf-8")
+          if 'updateToolProgress("prompt_prepare", 0L)' not in s or 'updateToolProgress("generating", 0L)' not in s:
+              raise SystemExit("progress patch was not applied")
+
+      - name: Commit patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/src/main/java/com/example/lfmmobile/MainActivity.kt
+          if git diff --cached --quiet; then
+            echo "No changes needed."
+            exit 0
+          fi
+          git commit -m "Show progress during normal generation"
+          git push

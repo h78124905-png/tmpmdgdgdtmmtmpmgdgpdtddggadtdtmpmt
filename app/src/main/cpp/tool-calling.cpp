@@ -125,12 +125,20 @@ Java_com_example_lfmmobile_LlamaEngine_nativeGenerateToolStep(JNIEnv * env, jobj
         progress("tokenize_tool_prompt"); const llama_tokens prompt_tokens=common_tokenize(g_engine.context,chat.prompt,true,true); timing.tokenize_ms=timing.mark();
         const uint32_t n_ctx=llama_n_ctx(g_engine.context); if(prompt_tokens.empty()) return tool_result(env,make_error("tool prompt tokenization failed")); if(prompt_tokens.size()+1>=n_ctx) return tool_result(env,make_error("prompt exceeds context"));
 
-        progress("init_tool_sampler"); common_params_sampling sampling; sampling.temp=.2f; sampling.top_k=40; sampling.top_p=.95f;
-        if(!chat.grammar.empty()){ progress("init_tool_grammar"); try{sampling.grammar=common_grammar(COMMON_GRAMMAR_TYPE_TOOL_CALLS,chat.grammar); sampling.generation_prompt=chat.generation_prompt;}catch(...){sampling.grammar=common_grammar();sampling.generation_prompt.clear();} }
-        progress("init_tool_sampler_create"); common_sampler_ptr sampler;
-        try{sampler.reset(common_sampler_init(g_engine.model,sampling));}
-        catch(...){sampling.grammar=common_grammar();sampling.generation_prompt.clear();sampler.reset(common_sampler_init(g_engine.model,sampling));}
-        timing.sampler_ms=timing.mark(); if(!sampler) return tool_result(env,make_error("tool sampler init failed"));
+        // Tool grammar initialization was the previous hard failure point. LFM2.5 emits
+        // its native tool-call markers itself, so do not install a grammar here. Parsing
+        // is still performed by common_chat_parse() below. This also keeps this path
+        // compatible with models whose chat template does not expose a tool grammar.
+        progress("init_tool_sampler");
+        common_params_sampling sampling;
+        sampling.temp=.2f; sampling.top_k=40; sampling.top_p=.95f;
+        sampling.grammar=common_grammar();
+        sampling.generation_prompt.clear();
+        progress("init_tool_sampler_create");
+        common_sampler_ptr sampler;
+        sampler.reset(common_sampler_init(g_engine.model,sampling));
+        timing.sampler_ms=timing.mark();
+        if(!sampler) return tool_result(env,make_error("tool sampler init failed"));
 
         progress("clear_tool_kv"); llama_memory_clear(llama_get_memory(g_engine.context),false); timing.kv_clear_ms=timing.mark();
         const uint32_t n_batch=std::max<uint32_t>(1,llama_n_batch(g_engine.context)); llama_batch batch=llama_batch_init(std::min<uint32_t>(n_batch,(uint32_t)prompt_tokens.size()),0,1);
@@ -139,8 +147,18 @@ Java_com_example_lfmmobile_LlamaEngine_nativeGenerateToolStep(JNIEnv * env, jobj
         llama_batch_free(batch); timing.prefill_ms=timing.mark(); report_progress(env,callback,"prefill_complete",timing.total_ms());
 
         progress("sample_first_tool_token"); llama_token next=common_sampler_sample(sampler.get(),g_engine.context,(int)prompt_tokens.size()-1); common_sampler_accept(sampler.get(),next,true); timing.first_sample_ms=timing.mark();
-        std::string generated; const int limit=std::max(1,(int)max_tokens); progress("generate_tool_tokens");
-        for(int i=0;i<limit;++i){if(llama_vocab_is_eog(g_engine.vocab,next))break; generated+=common_token_to_piece(g_engine.context,next); llama_batch b=llama_batch_init(1,0,1); common_batch_add(b,next,(llama_pos)(prompt_tokens.size()+i),{0},true); if(llama_decode(g_engine.context,b)!=0){llama_batch_free(b);return tool_result(env,make_error("tool decode failed"));} next=common_sampler_sample(sampler.get(),g_engine.context,0); common_sampler_accept(sampler.get(),next,true); llama_batch_free(b);}
+        std::string generated; const int limit=std::max(1,std::min((int)max_tokens,256)); progress("generate_tool_tokens");
+        for(int i=0;i<limit;++i){
+            if((i % 8)==0) report_progress(env,callback,"generate_tool_tokens",timing.total_ms());
+            if(llama_vocab_is_eog(g_engine.vocab,next))break;
+            generated+=common_token_to_piece(g_engine.context,next);
+            llama_batch b=llama_batch_init(1,0,1);
+            common_batch_add(b,next,(llama_pos)(prompt_tokens.size()+i),{0},true);
+            if(llama_decode(g_engine.context,b)!=0){llama_batch_free(b);return tool_result(env,make_error("tool decode failed"));}
+            next=common_sampler_sample(sampler.get(),g_engine.context,0);
+            common_sampler_accept(sampler.get(),next,true);
+            llama_batch_free(b);
+        }
         timing.generation_ms=timing.mark();
         progress("parse_generated_tool_call"); common_chat_parser_params parser(chat); parser.parse_tool_calls=true; const common_chat_msg parsed=common_chat_parse(generated,false,parser); timing.parse_result_ms=timing.mark();
         const std::string result=parsed.tool_calls.empty()?make_final(parsed):make_tools(parsed); report_progress(env,callback,"complete",timing.total_ms());

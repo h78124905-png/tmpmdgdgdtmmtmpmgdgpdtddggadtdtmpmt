@@ -259,29 +259,31 @@ std::string generate_chat_impl(JNIEnv * env, const common_chat_params & chat_par
             std::vector<uint8_t> ckpt_tgt, ckpt_dft;
             const bool use_ckpt = common_context_can_seq_rm(g_engine.context) == COMMON_CONTEXT_SEQ_RM_TYPE_FULL;
             if (use_ckpt) {
-                const size_t st = llama_state_seq_get_size_ext(g_engine.context, 0, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
-                ckpt_tgt.resize(st);
-                if (st) llama_state_seq_get_data_ext(g_engine.context, ckpt_tgt.data(), st, 0, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
-                if (g_engine.draft_init && g_engine.draft_init->context()) {
-                    auto * dctx = g_engine.draft_init->context();
-                    const size_t sd = llama_state_seq_get_size_ext(dctx, 0, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
-                    ckpt_dft.resize(sd);
-                    if (sd) llama_state_seq_get_data_ext(dctx, ckpt_dft.data(), sd, 0, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+                const uint64_t size_tgt = llama_state_seq_get_size(g_engine.context, 0);
+                ckpt_tgt.resize(size_tgt);
+                if (size_tgt > 0) {
+                    llama_state_seq_get_data(g_engine.context, ckpt_tgt.data(), size_tgt, 0);
+                }
+                auto * dctx = g_engine.draft_init ? g_engine.draft_init->context() : nullptr;
+                if (dctx) {
+                    const uint64_t size_dft = llama_state_seq_get_size(dctx, 0);
+                    ckpt_dft.resize(size_dft);
+                    if (size_dft > 0) llama_state_seq_get_data(dctx, ckpt_dft.data(), size_dft, 0);
                 }
             }
-            llama_tokens drafts;
-            auto & dp = common_speculative_get_draft_params(g_engine.speculative.get(), 0);
-            dp.drafting = true; dp.n_max = std::min(10, n_predict - step); dp.n_past = n_past; dp.id_last = sampled; dp.prompt = &history; dp.result = &drafts;
-            common_speculative_draft(g_engine.speculative.get());
-            if (drafts.empty()) { g_engine.speculative.reset(); g_engine.draft_init.reset(); continue; }
-            const int n_verify = 1 + static_cast<int>(drafts.size());
-            llama_batch verify = llama_batch_init(n_verify, 0, 1);
-            common_batch_add(verify, sampled, n_past, {0}, true);
-            for (size_t i = 0; i < drafts.size(); ++i) common_batch_add(verify, drafts[i], n_past + 1 + static_cast<llama_pos>(i), {0}, true);
-            if (g_engine.draft_init && g_engine.draft_init->context()) llama_memory_seq_rm(llama_get_memory(g_engine.draft_init->context()), 0, n_past, -1);
-            if (!decode_batch(g_engine.context, verify)) { llama_batch_free(verify); return "[speculative target decode failed]"; }
-            if (!common_speculative_process(g_engine.speculative.get(), verify)) { llama_batch_free(verify); return "[speculative process failed]"; }
-            std::vector<llama_token> ids = common_sampler_sample_and_accept_n(g_engine.sampler.get(), g_engine.context, drafts);
+            llama_tokens ids;
+            llama_tokens draft_ids;
+            const int remaining = n_predict - step;
+            const int draft_n = std::min(8, std::max(1, remaining));
+            common_speculative_draft(g_engine.speculative.get(), draft_ids, draft_n);
+            const auto proposed = draft_ids;
+            if (proposed.empty()) {
+                g_engine.speculative.reset();
+                continue;
+            }
+            ids = common_speculative_verify(g_engine.speculative.get(), proposed, 0);
+            llama_batch verify = common_speculative_prepare(g_engine.speculative.get(), ids, n_past);
+            if (!decode_batch(g_engine.context, verify)) { llama_batch_free(verify); return "[speculative verify failed]"; }
             llama_batch_free(verify);
             if (ids.empty()) return "[speculative sampling failed]";
             const size_t accepted = ids.size() - 1;
@@ -318,7 +320,7 @@ std::string generate_chat_impl(JNIEnv * env, const common_chat_params & chat_par
         if (callback && on_stats) {
             const auto now = std::chrono::steady_clock::now();
             const int64_t elapsed_ms = std::max<int64_t>(1, std::chrono::duration_cast<std::chrono::milliseconds>(now - t_start).count());
-            emit_stats(env, callback, on_stats, static_cast<double>(generated) * 1000.0 / static_cast<double>(elapsed_ms), elapsed_ms, static_cast<int>(n_past), static_cast<int>(n_ctx));
+            emit_stats(env, callback, on_stats, static_cast<double>(generated) * 1000.0 / static_cast<double>(elapsed_ms), elapsed_ms, static_cast<int>(n_past), static_cast<int>(llama_n_ctx(g_engine.context)));
         }
     }
     if (callback && on_token) emit_final_utf8(env, callback, on_token, utf8_pending);
@@ -333,85 +335,12 @@ std::string generate_impl(JNIEnv * env, const std::string & prompt_text, int max
     auto templates = common_chat_templates_init(g_engine.model, "");
     if (!templates) return "[chat template init failed]";
     common_chat_templates_inputs chat_inputs;
-    chat_inputs.messages = std::move(messages);
+    chat_inputs.messages = messages;
     chat_inputs.add_generation_prompt = true;
-    chat_inputs.use_jinja = true;
-    chat_inputs.enable_thinking = true;
-    const common_chat_params chat_params = common_chat_templates_apply(templates.get(), chat_inputs);
-    if (chat_params.prompt.empty()) return "[chat template produced an empty prompt]";
-    const llama_tokens input = common_tokenize(g_engine.context, chat_params.prompt, true, true);
-    if (input.empty()) return "[tokenization failed]";
+    auto formatted = common_chat_templates_apply(templates.get(), chat_inputs);
+    if (formatted.prompt.empty()) return "[chat format failed: empty prompt]";
+    llama_tokens input = common_tokenize(g_engine.vocab, formatted.prompt, true);
+    common_chat_params chat_params;
+    chat_params.supports_thinking = false;
     return generate_chat_impl(env, chat_params, input, max_tokens, callback, {});
 }
-}
-
-extern "C" JNIEXPORT jboolean JNICALL
-Java_com_example_lfmmobile_LlamaEngine_nativeLoadModelFromPath(JNIEnv * env, jobject, jstring model_path, jstring draft_model_path, jint context_size) {
-    const std::string path = get_string(env, model_path);
-    const std::string draft_path = get_string(env, draft_model_path);
-    if (path.empty()) { set_error("stage=path; model path is empty"); return JNI_FALSE; }
-    free_engine();
-    g_engine.last_error.clear();
-    if (!g_engine.backend_initialized) { llama_backend_init(); g_engine.backend_initialized = true; }
-    try {
-        llama_model_params model_params = llama_model_default_params();
-        model_params.n_gpu_layers = 0;
-        model_params.progress_callback = load_progress;
-        model_params.progress_callback_user_data = nullptr;
-        llama_model * model = llama_model_load_from_file(path.c_str(), model_params);
-        if (!model) { set_error("stage=model_load; llama_model_load_from_file returned null"); return JNI_FALSE; }
-        const llama_vocab * vocab = llama_model_get_vocab(model);
-        if (!vocab) { llama_model_free(model); set_error("stage=model_validation; loaded model has no vocabulary"); return JNI_FALSE; }
-        llama_context_params context_params = llama_context_default_params();
-        context_params.n_ctx = std::max(512, static_cast<int>(context_size));
-        context_params.n_batch = std::min(context_params.n_ctx, 256u);
-        context_params.n_ubatch = std::min(context_params.n_batch, 256u);
-        context_params.n_seq_max = 1;
-        context_params.n_threads = std::max(1, static_cast<int>(std::thread::hardware_concurrency() / 2));
-        context_params.n_threads_batch = context_params.n_threads;
-        llama_context * context = llama_init_from_model(model, context_params);
-        if (!context) { llama_model_free(model); set_error("stage=context_init; GGUF loaded but llama_init_from_model returned null"); return JNI_FALSE; }
-        common_params_sampling sampling; sampling.temp = 0.7f; sampling.top_k = 40; sampling.top_p = 0.95f;
-        auto sampler = common_sampler_init(model, sampling);
-        if (!sampler) { llama_free(context); llama_model_free(model); set_error("stage=sampler_init; model and context loaded but sampler initialization failed"); return JNI_FALSE; }
-        g_engine.model = model; g_engine.context = context; g_engine.vocab = vocab; g_engine.sampler.reset(sampler);
-        if (!draft_path.empty()) {
-            LOGI("[spec] initializing DSpark draft: %s", draft_path.c_str());
-            common_params spec_params;
-            spec_params.model.path = draft_path;
-            spec_params.n_ctx = context_params.n_ctx; spec_params.n_batch = context_params.n_batch; spec_params.n_ubatch = context_params.n_ubatch;
-            spec_params.n_parallel = 1; spec_params.n_sequences = 1; spec_params.speculative.types = { COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK };
-            spec_params.speculative.draft.mparams.path = draft_path; spec_params.speculative.draft.n_max = 10; spec_params.speculative.draft.n_min = 0; spec_params.speculative.draft.n_gpu_layers = 0; spec_params.speculative.draft.ctx_tgt = context;
-            g_engine.draft_init = common_speculative_init_from_params(spec_params, model, context);
-            if (!g_engine.draft_init || !g_engine.draft_init->model() || !g_engine.draft_init->context()) { free_engine(); set_error("stage=dspark_init; could not initialize the selected DSpark draft. Check that it matches the target model."); return JNI_FALSE; }
-            spec_params.speculative.draft.ctx_dft = g_engine.draft_init->context();
-            g_engine.speculative.reset(common_speculative_init(spec_params.speculative, 1));
-            if (!g_engine.speculative) { free_engine(); set_error("stage=dspark_spec; common_speculative_init returned null"); return JNI_FALSE; }
-            LOGI("[spec] DSpark initialized successfully");
-        }
-        return JNI_TRUE;
-    } catch (const std::exception & e) { set_error(std::string("stage=exception; ") + e.what()); free_engine(); return JNI_FALSE; }
-    catch (...) { set_error("stage=exception; unknown native exception"); free_engine(); return JNI_FALSE; }
-}
-
-extern "C" JNIEXPORT jstring JNICALL
-Java_com_example_lfmmobile_LlamaEngine_nativeGetLastError(JNIEnv * env, jobject) { return utf8_to_jstring(env, g_engine.last_error); }
-
-extern "C" JNIEXPORT jstring JNICALL
-Java_com_example_lfmmobile_LlamaEngine_nativeGenerate(JNIEnv * env, jobject, jstring prompt, jint max_tokens) {
-    const std::string prompt_text = get_string(env, prompt);
-    try { return utf8_to_jstring(env, generate_impl(env, prompt_text, max_tokens, nullptr)); }
-    catch (const std::exception & e) { set_error(std::string("stage=generate; ") + e.what()); return utf8_to_jstring(env, "[generation exception]"); }
-    catch (...) { set_error("stage=generate; unknown native exception"); return utf8_to_jstring(env, "[generation exception]"); }
-}
-
-extern "C" JNIEXPORT void JNICALL
-Java_com_example_lfmmobile_LlamaEngine_nativeGenerateStream(JNIEnv * env, jobject, jstring prompt, jint max_tokens, jobject callback) {
-    const std::string prompt_text = get_string(env, prompt);
-    try { (void) generate_impl(env, prompt_text, max_tokens, callback); }
-    catch (const std::exception & e) { set_error(std::string("stage=generate_stream; ") + e.what()); }
-    catch (...) { set_error("stage=generate_stream; unknown native exception"); }
-}
-
-extern "C" JNIEXPORT void JNICALL
-Java_com_example_lfmmobile_LlamaEngine_nativeUnloadModel(JNIEnv *, jobject) { free_engine(); }

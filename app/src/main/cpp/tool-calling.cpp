@@ -128,7 +128,9 @@ Java_com_example_lfmmobile_LlamaEngine_nativeGenerateToolStep(JNIEnv * env, jobj
         inputs.parallel_tool_calls = false;
         inputs.add_generation_prompt = true;
         inputs.use_jinja = true;
-        inputs.enable_thinking = true;
+        // Tool selection should be a short routing decision. Keep thinking for
+        // the final answer, but do not spend CPU time reasoning before search.
+        inputs.enable_thinking = false;
         const common_chat_params chat = common_chat_templates_apply(templates.get(), inputs);
         if (chat.prompt.empty()) return tool_result(env, make_error("empty chat prompt"));
         report_progress(env, callback, "tokenize_tool_prompt", 0);

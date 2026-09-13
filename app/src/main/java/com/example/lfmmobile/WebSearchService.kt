@@ -149,7 +149,7 @@ class WebSearchService {
         append("<tool_result name=\"fetch_url\" trust=\"untrusted\">\n")
         append("URL: ").append(result.url).append('\n')
         if (result.title.isNotBlank()) append("Title: ").append(result.title).append('\n')
-        append(result.text).append('\n')
+        append(result.text.take(6000)).append('\n')
         append("</tool_result>")
     }
 }

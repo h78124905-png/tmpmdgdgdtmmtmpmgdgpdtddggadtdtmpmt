@@ -12,7 +12,9 @@ data class ToolCallTrace(val name: String, val arguments: String, val id: String
 class ToolAgent(private val engine: LlamaEngine, private val webSearch: WebSearchService = WebSearchService()) {
     companion object {
         private const val TAG = "ToolAgent"
-        private const val MAX_TOOL_CALLS = 4
+        private const val MAX_TOOL_CALLS = 3
+        private const val MAX_HISTORY_MESSAGES = 6
+        private const val MAX_MESSAGE_CHARS = 2400
         fun toolDefinitions(): JSONArray = JSONArray().apply {
             put(functionTool("web_search", "Search the web for current or factual information.", JSONObject().put("type", "object").put("properties", JSONObject().put("query", stringSchema("Search query")).put("max_results", integerSchema(1, 8))).put("required", JSONArray().put("query"))))
             put(functionTool("fetch_url", "Fetch and read a specific public HTTP or HTTPS URL.", JSONObject().put("type", "object").put("properties", JSONObject().put("url", stringSchema("Public URL"))).put("required", JSONArray().put("url"))))
@@ -23,11 +25,11 @@ class ToolAgent(private val engine: LlamaEngine, private val webSearch: WebSearc
     }
 
     suspend fun run(initialMessages: JSONArray, maxTokens: Int, onProgress: (String, Long) -> Unit = { _, _ -> }): AgentResult = withContext(Dispatchers.Default) {
-        val messages = initialMessages; val tools = toolDefinitions(); val sources = mutableListOf<SearchResult>(); val seenCalls = mutableSetOf<String>()
+        val messages = compactMessages(initialMessages); val tools = toolDefinitions(); val sources = mutableListOf<SearchResult>(); val seenCalls = mutableSetOf<String>()
         var thinking = ""; var toolCallsUsed = 0; var iterations = 0; var lastTiming = ""
         while (iterations <= MAX_TOOL_CALLS) {
             iterations++
-            val raw = try { onProgress("tool_step_start", 0L); engine.generateToolStep(messages.toString(), tools.toString(), maxTokens.coerceAtMost(256), onProgress) } catch (e: Exception) {
+            val raw = try { onProgress("tool_step_start", 0L); engine.generateToolStep(messages.toString(), tools.toString(), maxTokens.coerceAtMost(160), onProgress) } catch (e: Exception) {
                 Log.e(TAG, "native tool-step failed", e); return@withContext AgentResult("", thinking, sources, e.message ?: e::class.java.simpleName, lastTiming)
             }
             val step = try { JSONObject(raw) } catch (e: Exception) { return@withContext AgentResult("", thinking, sources, "Invalid native tool-step response: ${e.message}", lastTiming) }
@@ -71,6 +73,24 @@ class ToolAgent(private val engine: LlamaEngine, private val webSearch: WebSearc
         }
         AgentResult("", thinking, sources, "Tool-call loop exhausted", lastTiming)
     }
+
+    private fun compactMessages(input: JSONArray): JSONArray {
+        val output = JSONArray()
+        if (input.length() == 0) return output
+        output.put(input.optJSONObject(0) ?: JSONObject().put("role", "system").put("content", "Use tools when needed."))
+        val start = maxOf(1, input.length() - MAX_HISTORY_MESSAGES + 1)
+        for (i in start until input.length()) {
+            val message = input.optJSONObject(i) ?: continue
+            val copy = JSONObject(message.toString())
+            if (copy.has("content") && !copy.isNull("content")) {
+                val content = copy.optString("content")
+                if (content.length > MAX_MESSAGE_CHARS) copy.put("content", content.take(MAX_MESSAGE_CHARS) + "…")
+            }
+            output.put(copy)
+        }
+        return output
+    }
+
     private fun allowed(name: String, args: JSONObject): Boolean = when (name) {
         "web_search" -> args.optString("query").isNotBlank() && args.optString("query").length <= 1000
         "fetch_url" -> { val u = args.optString("url"); (u.startsWith("https://") || u.startsWith("http://")) && u.length <= 4096 }

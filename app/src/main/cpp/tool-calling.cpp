@@ -118,15 +118,24 @@ Java_com_example_lfmmobile_LlamaEngine_nativeGenerateToolStep(JNIEnv * env, jobj
 
         progress("chat_template_init"); auto templates=common_chat_templates_init(g_engine.model,"");
         if(!templates) return tool_result(env,make_error("chat template init failed")); timing.template_ms=timing.mark();
-        progress("chat_template_apply"); common_chat_templates_inputs inputs; inputs.messages=messages; inputs.tools=tools; inputs.tool_choice=COMMON_CHAT_TOOL_CHOICE_AUTO; inputs.parallel_tool_calls=false; inputs.add_generation_prompt=true; inputs.use_jinja=true; inputs.enable_thinking=true;
+        progress("chat_template_apply");
+        common_chat_templates_inputs inputs;
+        inputs.messages=messages;
+        inputs.tools=tools;
+        inputs.tool_choice=COMMON_CHAT_TOOL_CHOICE_AUTO;
+        inputs.parallel_tool_calls=false;
+        inputs.add_generation_prompt=true;
+        inputs.use_jinja=true;
+        // Tool selection uses a separate, model-supplied tool template. Do not
+        // request reasoning mode here: several tool templates combine Jinja
+        // tool rendering and thinking instructions in incompatible ways.
+        inputs.enable_thinking=false;
         const common_chat_params chat=common_chat_templates_apply(templates.get(),inputs); timing.template_ms+=timing.mark();
         if(chat.prompt.empty()) return tool_result(env,make_error("empty chat prompt"));
 
         progress("tokenize_tool_prompt"); const llama_tokens prompt_tokens=common_tokenize(g_engine.context,chat.prompt,true,true); timing.tokenize_ms=timing.mark();
         const uint32_t n_ctx=llama_n_ctx(g_engine.context); if(prompt_tokens.empty()) return tool_result(env,make_error("tool prompt tokenization failed")); if(prompt_tokens.size()+1>=n_ctx) return tool_result(env,make_error("prompt exceeds context"));
 
-        // Tool calls use the model's chat template for the wire format, but generation
-        // itself must share the same sampler/prefill invariants as normal generation.
         progress("init_tool_sampler");
         common_params_sampling sampling;
         sampling.temp=.2f; sampling.top_k=40; sampling.top_p=.95f;

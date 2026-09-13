@@ -28,9 +28,6 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
-            // CI/test release: use Android's debug keystore so the APK is signed
-            // and directly installable without putting a private release key in
-            // the public repository.
             signingConfig = signingConfigs.getByName("debug")
         }
     }
@@ -63,5 +60,7 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("org.jsoup:jsoup:1.17.2")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

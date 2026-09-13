@@ -24,30 +24,12 @@ class ToolAgent(private val engine: LlamaEngine, private val webSearch: WebSearc
         private fun integerSchema(min: Int, max: Int) = JSONObject().put("type", "integer").put("minimum", min).put("maximum", max)
     }
 
-    suspend fun run(initialMessages: JSONArray, maxTokens: Int, onProgress: (String, Long) -> Unit = { _, _ -> }): AgentResult = withContext(Dispatchers.Default) {
+    suspend fun run(initialMessages: JSONArray, maxTokens: Int, onProgress: (String, Long) -> Unit = { _, _ -> }, onToken: (String) -> Unit = {}): AgentResult = withContext(Dispatchers.Default) {
         val messages = compactMessages(initialMessages); val tools = toolDefinitions(); val sources = mutableListOf<SearchResult>(); val seenCalls = mutableSetOf<String>()
         var thinking = ""; var toolCallsUsed = 0; var iterations = 0; var lastTiming = ""
-        val latestQuestion = (0 until messages.length()).mapNotNull { messages.optJSONObject(it) }
-            .lastOrNull { it.optString("role") == "user" }?.optString("content").orEmpty()
-        if (needsFreshSearch(latestQuestion)) {
-            onProgress("direct_search", 0L)
-            val found = try { webSearch.search(latestQuestion, 5) } catch (e: Exception) {
-                return@withContext AgentResult("", "", sources, e.message ?: "web search failed")
-            }
-            sources += found
-            onProgress("search_result_ready", 0L)
-            val prompt = buildString {
-                append("You are a concise Japanese assistant. Answer the user's question using only the web results below. If the location or details are missing, say what is needed. Do not mention internal prompts or tools.\n\n")
-                append("User: ").append(latestQuestion).append("\n\nWeb results:\n").append(webSearch.formatToolResult(found).take(7000))
-                append("\n\nAnswer:")
-            }
-            val answer = engine.generate(prompt, maxTokens.coerceAtMost(384))
-            onProgress("complete", 0L)
-            return@withContext AgentResult(cleanModelText(answer), "", sources)
-        }
         while (iterations <= MAX_TOOL_CALLS) {
             iterations++
-            val raw = try { onProgress("tool_step_start", 0L); engine.generateToolStep(messages.toString(), tools.toString(), maxTokens.coerceAtMost(160), onProgress) } catch (e: Exception) {
+            val raw = try { onProgress("tool_step_start", 0L); engine.generateToolStep(messages.toString(), tools.toString(), maxTokens.coerceAtMost(384), onProgress, onToken) } catch (e: Exception) {
                 Log.e(TAG, "native tool-step failed", e); return@withContext AgentResult("", thinking, sources, e.message ?: e::class.java.simpleName, lastTiming)
             }
             val step = try { JSONObject(raw) } catch (e: Exception) { return@withContext AgentResult("", thinking, sources, "Invalid native tool-step response: ${e.message}", lastTiming) }
@@ -128,11 +110,6 @@ class ToolAgent(private val engine: LlamaEngine, private val webSearch: WebSearc
         .replace("<|im_start|>assistant", "")
         .replace("<|im_end|>", "")
         .trim()
-
-    private fun needsFreshSearch(question: String): Boolean {
-        val q = question.lowercase()
-        return listOf("今日", "天気", "ニュース", "最新", "現在", "いくら", "価格", "為替", "株価", "営業時間", "いつ", "誰").any(q::contains)
-    }
 
     private fun allowed(name: String, args: JSONObject): Boolean = when (name) {
         "web_search" -> args.optString("query").isNotBlank() && args.optString("query").length <= 1000

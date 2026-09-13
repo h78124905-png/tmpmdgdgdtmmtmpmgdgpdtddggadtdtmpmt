@@ -25,9 +25,10 @@ class LlamaEngine : AutoCloseable {
         nativeGenerateStream(prompt, maxTokens, callback); return ""
     }
 
-    fun generateToolStep(messagesJson: String, toolsJson: String, maxTokens: Int = 384, onProgress: (String, Long) -> Unit = { _, _ -> }): String {
+    fun generateToolStep(messagesJson: String, toolsJson: String, maxTokens: Int = 384, onProgress: (String, Long) -> Unit = { _, _ -> }, onToken: (String) -> Unit = {}): String {
         val callback = object {
             @Suppress("unused") fun onProgress(stage: String, elapsedMs: Long) { onProgress(stage, elapsedMs) }
+            @Suppress("unused") fun onToken(text: String) { onToken(text) }
         }
         return nativeGenerateToolStep(messagesJson, toolsJson, maxTokens, callback)
     }

@@ -137,7 +137,7 @@ Java_com_example_lfmmobile_LlamaEngine_nativeGenerateToolStep(JNIEnv * env, jobj
         const llama_tokens input = common_tokenize(g_engine.context, chat.prompt, true, true);
         if (input.empty()) return tool_result(env, make_error("tool prompt tokenization failed"));
         auto progress = [&](const char * s) { report_progress(env, callback, s, 0); };
-        const std::string generated = generate_chat_impl(env, chat, input, std::max(1, std::min((int)max_tokens, 256)), nullptr, progress);
+        const std::string generated = generate_chat_impl(env, chat, input, std::max(1, std::min((int)max_tokens, 384)), callback, progress);
         if (generated.rfind("[", 0) == 0) return tool_result(env, make_error(generated));
         report_progress(env, callback, "parse_generated_tool_call", 0);
         common_chat_parser_params parser(chat);
